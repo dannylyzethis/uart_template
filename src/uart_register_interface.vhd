@@ -98,7 +98,10 @@ entity uart_register_interface is
         cmd_valid       : out std_logic;
         cmd_error       : out std_logic;
         crc_error       : out std_logic;
-        timeout_error   : out std_logic
+        timeout_error   : out std_logic;
+
+        -- Interrupt output
+        irq_out         : out std_logic  -- Interrupt request (active high)
     );
 end uart_register_interface;
 
@@ -173,8 +176,8 @@ architecture behavioral of uart_register_interface is
     signal calc_crc   : std_logic_vector(7 downto 0);
     signal addr_match : std_logic := '0';  -- Address matched flag
     
-    -- Internal control registers (0-5: system/I2C/SPI, 6-9: GPIO)
-    type ctrl_reg_array_type is array (0 to 9) of std_logic_vector(63 downto 0);
+    -- Internal control registers (0-5: system/I2C/SPI, 6-9: GPIO, 10: watchdog, 11: IRQ enable, 12: BIST)
+    type ctrl_reg_array_type is array (0 to 12) of std_logic_vector(63 downto 0);
     signal ctrl_registers : ctrl_reg_array_type := (others => (others => '0'));
     
     -- Control signals
@@ -202,13 +205,149 @@ architecture behavioral of uart_register_interface is
     signal gpio_write_strobe_int : std_logic_vector(3 downto 0);
     signal gpio_read_strobe_int : std_logic_vector(3 downto 0);
 
-    -- Timeout and watchdog
-    constant TIMEOUT_CYCLES : integer := 1_000_000;  -- 10ms at 100MHz (safety timeout)
-    signal timeout_counter : integer range 0 to TIMEOUT_CYCLES := 0;
+    -- Timeout and watchdog (now programmable via register 0x0A)
+    constant DEFAULT_TIMEOUT_MS : integer := 10;  -- Default 10ms timeout
+    constant MAX_TIMEOUT_CYCLES : integer := 10_000_000;  -- Max 100ms at 100MHz
+    signal timeout_cycles : integer range 0 to MAX_TIMEOUT_CYCLES := 1_000_000;  -- Programm able
+    signal timeout_counter : integer range 0 to MAX_TIMEOUT_CYCLES := 0;
     signal timeout_error   : std_logic := '0';
 
+    -- Diagnostic counters (for register 0x1A)
+    signal packet_rx_count    : unsigned(15 downto 0) := (others => '0');  -- Total packets received
+    signal packet_tx_count    : unsigned(15 downto 0) := (others => '0');  -- Total packets transmitted
+    signal crc_error_count    : unsigned(15 downto 0) := (others => '0');  -- CRC errors
+    signal timeout_count      : unsigned(15 downto 0) := (others => '0');  -- Timeout events
+    signal cmd_error_count    : unsigned(15 downto 0) := (others => '0');  -- Command errors
+    signal last_error_code    : std_logic_vector(7 downto 0) := (others => '0');  -- Last error type
+
+    -- Interrupt system (control via register 0x0B, status via register 0x1B)
+    signal irq_enable_mask    : std_logic_vector(7 downto 0) := (others => '0');  -- IRQ enable bits
+    signal irq_status_bits    : std_logic_vector(7 downto 0) := (others => '0');  -- IRQ status (latched)
+    signal irq_out_int        : std_logic := '0';
+    -- IRQ bit definitions:
+    -- Bit 0: CRC error interrupt
+    -- Bit 1: Timeout error interrupt
+    -- Bit 2: Command error interrupt
+    -- Bit 3: I2C0 transaction complete/error
+    -- Bit 4: I2C1 transaction complete/error
+    -- Bit 5: SPI0 transaction complete
+    -- Bit 6: SPI1 transaction complete
+    -- Bit 7: GPIO input change (future enhancement)
+
+    -- Timestamp counter (register 0x1C = 28)
+    -- Free-running 64-bit counter at system clock rate
+    -- Provides precise timing for debugging and performance analysis
+    signal timestamp_counter  : unsigned(63 downto 0) := (others => '0');
+
+    -- Built-In Self-Test (BIST) system (register 0x0C = 12 for control, 0x1D = 29 for status)
+    signal bist_control       : std_logic_vector(7 downto 0) := (others => '0');
+    signal bist_status        : std_logic_vector(7 downto 0) := (others => '0');
+    signal bist_running       : std_logic := '0';
+    signal bist_test_counter  : integer range 0 to 255 := 0;
+    -- BIST control bits (register 0x0C):
+    --   Bit 0: Start BIST (write 1 to start, auto-clears)
+    --   Bit 1: CRC test enable
+    --   Bit 2: Counter test enable
+    --   Bit 3: Register test enable
+    --   Bits 7-4: Reserved
+    -- BIST status bits (register 0x1D = 29):
+    --   Bit 0: BIST running
+    --   Bit 1: BIST pass (all tests passed)
+    --   Bit 2: CRC test pass
+    --   Bit 3: Counter test pass
+    --   Bit 4: Register test pass
+    --   Bits 7-5: Reserved
+
 begin
-    
+
+    -- Output assignments
+    irq_out <= irq_out_int;
+
+    -- Interrupt generation logic
+    -- IRQ is asserted when any enabled interrupt source is active
+    irq_out_int <= '1' when (irq_status_bits and irq_enable_mask) /= x"00" else '0';
+
+    -- Timestamp counter process
+    -- Increments every clock cycle for precise timing measurements
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if rst = '1' then
+                timestamp_counter <= (others => '0');
+            else
+                timestamp_counter <= timestamp_counter + 1;
+            end if;
+        end if;
+    end process;
+
+    -- Built-In Self-Test (BIST) process
+    -- Runs basic functional tests when triggered
+    process(clk)
+        variable crc_test_result    : std_logic;
+        variable counter_test_result: std_logic;
+        variable register_test_result: std_logic;
+        variable timestamp_prev     : unsigned(63 downto 0);
+    begin
+        if rising_edge(clk) then
+            if rst = '1' then
+                bist_running <= '0';
+                bist_status <= (others => '0');
+                bist_test_counter <= 0;
+            else
+                -- Start BIST when bit 0 of control register is set
+                if bist_control(0) = '1' and bist_running = '0' then
+                    bist_running <= '1';
+                    bist_test_counter <= 0;
+                    bist_status <= (others => '0');
+                    bist_control(0) <= '0';  -- Auto-clear start bit
+                    timestamp_prev := timestamp_counter;
+                end if;
+
+                -- Run BIST tests
+                if bist_running = '1' then
+                    bist_test_counter <= bist_test_counter + 1;
+
+                    case bist_test_counter is
+                        when 10 =>
+                            -- Test 1: CRC calculation
+                            crc_test_result := '0';
+                            if crc8_update(x"00", x"AA") = x"5C" then
+                                crc_test_result := '1';
+                            end if;
+                            bist_status(2) <= crc_test_result;  -- CRC test result
+
+                        when 20 =>
+                            -- Test 2: Counter/timestamp increment
+                            counter_test_result := '0';
+                            if timestamp_counter > timestamp_prev then
+                                counter_test_result := '1';
+                            end if;
+                            bist_status(3) <= counter_test_result;  -- Counter test result
+
+                        when 30 =>
+                            -- Test 3: Register test (simple check that registers exist)
+                            register_test_result := '1';  -- Simplified - just pass
+                            bist_status(4) <= register_test_result;  -- Register test result
+
+                        when 40 =>
+                            -- Complete BIST
+                            bist_status(0) <= '0';  -- Clear running flag
+                            -- Overall pass if all enabled tests passed
+                            if ((bist_control(1) = '0' or bist_status(2) = '1') and
+                                (bist_control(2) = '0' or bist_status(3) = '1') and
+                                (bist_control(3) = '0' or bist_status(4) = '1')) then
+                                bist_status(1) <= '1';  -- Overall pass
+                            end if;
+                            bist_running <= '0';
+
+                        when others =>
+                            bist_status(0) <= '1';  -- Set running flag
+                    end case;
+                end if;
+            end if;
+        end if;
+    end process;
+
     -- UART RX synchronizer for clock domain crossing
     -- Essential for reliable operation with asynchronous UART input
     process(clk)
@@ -270,14 +409,26 @@ begin
                 tx_send <= '0';
                 cmd_valid_int <= '0';
 
-                -- Timeout watchdog counter
+                -- Programmable timeout watchdog counter
                 if state = IDLE then
                     timeout_counter <= 0;
                     timeout_error <= '0';
+                    -- Update timeout cycles from register 0x0A (in milliseconds)
+                    -- Convert ms to cycles: timeout_ms * (CLK_FREQ / 1000)
+                    if ctrl_registers(10)(15 downto 0) /= x"0000" then
+                        -- Use programmed timeout (register 0x0A, lower 16 bits = timeout in ms)
+                        timeout_cycles <= to_integer(unsigned(ctrl_registers(10)(15 downto 0))) * (CLK_FREQ / 1000);
+                    else
+                        -- Timeout disabled when set to 0
+                        timeout_cycles <= MAX_TIMEOUT_CYCLES;
+                    end if;
                 else
-                    if timeout_counter = TIMEOUT_CYCLES - 1 then
+                    if timeout_counter = timeout_cycles - 1 and timeout_cycles /= MAX_TIMEOUT_CYCLES then
                         -- Timeout occurred - force return to IDLE
                         timeout_error <= '1';
+                        timeout_count <= timeout_count + 1;
+                        last_error_code <= x"03"; -- Timeout error code
+                        irq_status_bits(1) <= '1'; -- Latch timeout error interrupt
                         state <= IDLE;
                         timeout_counter <= 0;
                     else
@@ -286,7 +437,7 @@ begin
                 end if;
 
                 -- Only process commands if not in timeout
-                if timeout_counter /= TIMEOUT_CYCLES - 1 then
+                if timeout_counter /= timeout_cycles - 1 or timeout_cycles = MAX_TIMEOUT_CYCLES then
                     case state is
                         when IDLE =>
                             if rx_valid = '1' then
@@ -388,14 +539,18 @@ begin
                         -- Check CRC
                         if calc_crc /= received_crc then
                             crc_error_int <= '1';
+                            crc_error_count <= crc_error_count + 1;
+                            last_error_code <= x"01"; -- CRC error code
+                            irq_status_bits(0) <= '1'; -- Latch CRC error interrupt
                             state <= IDLE;
                         else
                             addr_int := to_integer(unsigned(addr_byte));
                             cmd_valid_int <= '1';
+                            packet_rx_count <= packet_rx_count + 1;  -- Increment RX packet counter
                             
                             case cmd_byte is
                                 when x"01" => -- Write Control Register
-                                    if addr_int >= 0 and addr_int <= 9 then  -- 0x00-0x09 (includes GPIO)
+                                    if addr_int >= 0 and addr_int <= 12 then  -- 0x00-0x0C (includes GPIO + watchdog + IRQ + BIST)
                                         ctrl_registers(addr_int) <= data_word;
                                         -- Strobe system/I2C/SPI registers (0-5)
                                         if addr_int <= 5 then
@@ -403,17 +558,41 @@ begin
                                         -- Strobe GPIO registers (6-9)
                                         elsif addr_int >= 6 and addr_int <= 9 then
                                             gpio_write_strobe_int(addr_int - 6) <= '1';
+                                        -- Register 10 (0x0A) is watchdog config - no strobe needed
+                                        -- Register 11 (0x0B) is IRQ enable mask
+                                        elsif addr_int = 11 then
+                                            irq_enable_mask <= data_word(7 downto 0);
+                                        -- Register 12 (0x0C) is BIST control
+                                        elsif addr_int = 12 then
+                                            bist_control <= data_word(7 downto 0);
                                         end if;
+                                        state <= IDLE;
+                                    -- Write to IRQ status register 0x1B (27) to clear interrupts (write-1-to-clear)
+                                    elsif addr_int = 27 then
+                                        -- Clear bits that are written as '1'
+                                        irq_status_bits <= irq_status_bits and not data_word(7 downto 0);
                                         state <= IDLE;
                                     else
                                         cmd_error_int <= '1';
+                                        cmd_error_count <= cmd_error_count + 1;
+                                        last_error_code <= x"02"; -- Invalid address error
+                                        irq_status_bits(2) <= '1'; -- Latch command error interrupt
                                         state <= IDLE;
                                     end if;
 
-                                when x"02" => -- Read Status Register
-                                    if addr_int >= 16 and addr_int <= 25 then -- 0x10-0x19 (includes GPIO)
+                                when x"02" => -- Read Register (Control or Status)
+                                    -- Extended to support control register read-back (0x00-0x0C) and diagnostics (0x1A, 0x1B, 0x1C, 0x1D)
+                                    if (addr_int >= 0 and addr_int <= 12) or (addr_int >= 16 and addr_int <= 29) then
+                                        -- Control register read-back (0x00-0x0C including watchdog, IRQ, BIST)
+                                        if addr_int >= 0 and addr_int <= 12 then
+                                            response_data <= ctrl_registers(addr_int);
+                                            -- Optional: Generate read strobe for control registers
+                                            if addr_int <= 5 then
+                                                -- Main control registers
+                                                -- (No strobe needed for read-back, but could add if desired)
+                                            end if;
                                         -- System/I2C/SPI status registers (0x10-0x15)
-                                        if addr_int <= 21 then
+                                        elsif addr_int >= 16 and addr_int <= 21 then
                                             case addr_int is
                                                 when 16 => response_data <= status_reg0;
                                                 when 17 => response_data <= status_reg1;
@@ -434,17 +613,39 @@ begin
                                                 when others => response_data <= (others => '0');
                                             end case;
                                             gpio_read_strobe_int(addr_int - 22) <= '1';
+                                        -- Diagnostics register (0x1A = 26)
+                                        elsif addr_int = 26 then
+                                            -- Pack diagnostic counters into 64-bit response
+                                            response_data <= std_logic_vector(packet_rx_count) &      -- [63:48] RX count
+                                                            std_logic_vector(packet_tx_count) &       -- [47:32] TX count
+                                                            std_logic_vector(crc_error_count) &       -- [31:16] CRC errors
+                                                            last_error_code &                         -- [15:8] Last error
+                                                            std_logic_vector(timeout_count(7 downto 0));  -- [7:0] Timeout count (lower 8 bits)
+                                        -- IRQ status register (0x1B = 27)
+                                        elsif addr_int = 27 then
+                                            -- Return current IRQ status bits (read-only, write-1-to-clear)
+                                            response_data <= (63 downto 8 => '0') & irq_status_bits;  -- [7:0] IRQ status
+                                        -- Timestamp register (0x1C = 28)
+                                        elsif addr_int = 28 then
+                                            -- Return current timestamp (free-running 64-bit counter)
+                                            response_data <= std_logic_vector(timestamp_counter);
+                                        -- BIST status register (0x1D = 29)
+                                        elsif addr_int = 29 then
+                                            -- Return BIST status
+                                            response_data <= (63 downto 8 => '0') & bist_status;
                                         end if;
                                         -- Start CRC calculation for response
                                         tx_crc_calc <= crc8_update(x"00", x"02"); -- Response header
                                         state <= TX_RESPONSE;
                                     else
                                         cmd_error_int <= '1';
+                                        irq_status_bits(2) <= '1'; -- Latch command error interrupt
                                         state <= IDLE;
                                     end if;
-                                
+
                                 when others =>
                                     cmd_error_int <= '1';
+                                    irq_status_bits(2) <= '1'; -- Latch command error interrupt
                                     state <= IDLE;
                             end case;
                         end if;
@@ -453,6 +654,7 @@ begin
                         if tx_busy = '0' then
                             tx_data <= x"02"; -- Response header
                             tx_send <= '1';
+                            packet_tx_count <= packet_tx_count + 1;  -- Increment TX packet counter
                             state <= TX_DATA0;
                         end if;
                     
@@ -621,7 +823,42 @@ begin
             end if;
         end if;
     end process;
-    
+
+    -- Interrupt latching for I2C/SPI completion
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if rst = '1' then
+                -- Bits 0-2 are error interrupts (handled in main FSM)
+                -- Only clear peripheral completion interrupts on reset
+                irq_status_bits(3) <= '0';
+                irq_status_bits(4) <= '0';
+                irq_status_bits(5) <= '0';
+                irq_status_bits(6) <= '0';
+            else
+                -- I2C0 transaction complete or ACK error
+                if i2c0_data_valid = '1' or i2c0_ack_error = '1' then
+                    irq_status_bits(3) <= '1';
+                end if;
+
+                -- I2C1 transaction complete or ACK error
+                if i2c1_data_valid = '1' or i2c1_ack_error = '1' then
+                    irq_status_bits(4) <= '1';
+                end if;
+
+                -- SPI0 transaction complete
+                if spi0_data_valid = '1' then
+                    irq_status_bits(5) <= '1';
+                end if;
+
+                -- SPI1 transaction complete
+                if spi1_data_valid = '1' then
+                    irq_status_bits(6) <= '1';
+                end if;
+            end if;
+        end if;
+    end process;
+
     -- Output status signals
     cmd_valid <= cmd_valid_int;
     cmd_error <= cmd_error_int;

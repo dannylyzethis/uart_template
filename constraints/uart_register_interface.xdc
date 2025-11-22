@@ -175,6 +175,13 @@ set_property -dict {PACKAGE_PIN P13 IOSTANDARD LVCMOS33} [get_ports {spi1_cs[3]}
 # Total GPIO capacity: 512 pins (256 outputs + 256 inputs)
 
 # ====================
+# Status Signals
+# ====================
+
+# Interrupt Request Output (active high)
+set_property -dict {PACKAGE_PIN P14 IOSTANDARD LVCMOS33} [get_ports irq_out]
+
+# ====================
 # Reset Signal
 # ====================
 
