@@ -244,19 +244,22 @@ architecture behavioral of uart_register_interface is
     signal bist_status        : std_logic_vector(7 downto 0) := (others => '0');
     signal bist_running       : std_logic := '0';
     signal bist_test_counter  : integer range 0 to 255 := 0;
+    signal bist_error_count   : unsigned(7 downto 0) := (others => '0');  -- Register mismatch count
+    signal bist_failed_addr   : std_logic_vector(7 downto 0) := (others => '0');  -- Last failed register
     -- BIST control bits (register 0x0C):
     --   Bit 0: Start BIST (write 1 to start, auto-clears)
     --   Bit 1: CRC test enable
-    --   Bit 2: Counter test enable
-    --   Bit 3: Register test enable
+    --   Bit 2: Counter/timestamp test enable
+    --   Bit 3: Register payload validation enable (write/read/verify)
     --   Bits 7-4: Reserved
     -- BIST status bits (register 0x1D = 29):
     --   Bit 0: BIST running
-    --   Bit 1: BIST pass (all tests passed)
+    --   Bit 1: BIST pass (all enabled tests passed)
     --   Bit 2: CRC test pass
     --   Bit 3: Counter test pass
-    --   Bit 4: Register test pass
-    --   Bits 7-5: Reserved
+    --   Bit 4: Register payload test pass
+    --   Bit 5: Payload mismatch detected (sticky until next BIST)
+    --   Bits 7-6: Reserved
 
 begin
 
@@ -281,26 +284,36 @@ begin
     end process;
 
     -- Built-In Self-Test (BIST) process
-    -- Runs basic functional tests when triggered
+    -- Runs comprehensive functional tests when triggered including register payload validation
     process(clk)
-        variable crc_test_result    : std_logic;
-        variable counter_test_result: std_logic;
-        variable register_test_result: std_logic;
-        variable timestamp_prev     : unsigned(63 downto 0);
+        variable crc_test_result      : std_logic;
+        variable counter_test_result  : std_logic;
+        variable register_test_result : std_logic;
+        variable timestamp_prev       : unsigned(63 downto 0);
+        variable test_pattern         : std_logic_vector(63 downto 0);
+        variable readback_value       : std_logic_vector(63 downto 0);
+        variable reg_index            : integer range 0 to 9;
+        variable saved_reg_values     : ctrl_reg_array_type;  -- Save original values
     begin
         if rising_edge(clk) then
             if rst = '1' then
                 bist_running <= '0';
                 bist_status <= (others => '0');
                 bist_test_counter <= 0;
+                bist_error_count <= (others => '0');
+                bist_failed_addr <= (others => '0');
             else
                 -- Start BIST when bit 0 of control register is set
                 if bist_control(0) = '1' and bist_running = '0' then
                     bist_running <= '1';
                     bist_test_counter <= 0;
                     bist_status <= (others => '0');
+                    bist_error_count <= (others => '0');
+                    bist_failed_addr <= (others => '0');
                     bist_control(0) <= '0';  -- Auto-clear start bit
                     timestamp_prev := timestamp_counter;
+                    -- Save current register values for restoration
+                    saved_reg_values := ctrl_registers;
                 end if;
 
                 -- Run BIST tests
@@ -309,7 +322,7 @@ begin
 
                     case bist_test_counter is
                         when 10 =>
-                            -- Test 1: CRC calculation
+                            -- Test 1: CRC calculation validation
                             crc_test_result := '0';
                             if crc8_update(x"00", x"AA") = x"5C" then
                                 crc_test_result := '1';
@@ -317,19 +330,150 @@ begin
                             bist_status(2) <= crc_test_result;  -- CRC test result
 
                         when 20 =>
-                            -- Test 2: Counter/timestamp increment
+                            -- Test 2: Counter/timestamp increment validation
                             counter_test_result := '0';
                             if timestamp_counter > timestamp_prev then
                                 counter_test_result := '1';
                             end if;
                             bist_status(3) <= counter_test_result;  -- Counter test result
 
+                        -- Test 3: Register payload validation (write/read/verify)
+                        -- Test registers 0-9 with known patterns
                         when 30 =>
-                            -- Test 3: Register test (simple check that registers exist)
-                            register_test_result := '1';  -- Simplified - just pass
-                            bist_status(4) <= register_test_result;  -- Register test result
+                            -- Initialize register test
+                            register_test_result := '1';  -- Assume pass
+                            reg_index := 0;
+                            test_pattern := x"5A5A5A5A5A5A5A5A";
+                            -- Write test pattern to register 0
+                            ctrl_registers(0) <= test_pattern;
+
+                        when 31 =>
+                            -- Read back and verify register 0
+                            readback_value := ctrl_registers(0);
+                            if readback_value /= x"5A5A5A5A5A5A5A5A" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"00";  -- Address 0 failed
+                                bist_status(5) <= '1';  -- Set mismatch flag
+                            end if;
+                            -- Write pattern to register 1
+                            ctrl_registers(1) <= x"A5A5A5A5A5A5A5A5";
+
+                        when 32 =>
+                            -- Verify register 1
+                            readback_value := ctrl_registers(1);
+                            if readback_value /= x"A5A5A5A5A5A5A5A5" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"01";
+                                bist_status(5) <= '1';
+                            end if;
+                            -- Write pattern to register 2
+                            ctrl_registers(2) <= x"FF00FF00FF00FF00";
+
+                        when 33 =>
+                            -- Verify register 2
+                            readback_value := ctrl_registers(2);
+                            if readback_value /= x"FF00FF00FF00FF00" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"02";
+                                bist_status(5) <= '1';
+                            end if;
+                            -- Write pattern to register 3
+                            ctrl_registers(3) <= x"00FF00FF00FF00FF";
+
+                        when 34 =>
+                            -- Verify register 3
+                            readback_value := ctrl_registers(3);
+                            if readback_value /= x"00FF00FF00FF00FF" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"03";
+                                bist_status(5) <= '1';
+                            end if;
+                            -- Write pattern to register 4
+                            ctrl_registers(4) <= x"DEADBEEFCAFEBABE";
+
+                        when 35 =>
+                            -- Verify register 4
+                            readback_value := ctrl_registers(4);
+                            if readback_value /= x"DEADBEEFCAFEBABE" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"04";
+                                bist_status(5) <= '1';
+                            end if;
+                            -- Write pattern to register 5
+                            ctrl_registers(5) <= x"0123456789ABCDEF";
+
+                        when 36 =>
+                            -- Verify register 5
+                            readback_value := ctrl_registers(5);
+                            if readback_value /= x"0123456789ABCDEF" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"05";
+                                bist_status(5) <= '1';
+                            end if;
+                            -- Write pattern to register 6 (GPIO bank 0)
+                            ctrl_registers(6) <= x"FFFFFFFF00000000";
+
+                        when 37 =>
+                            -- Verify register 6
+                            readback_value := ctrl_registers(6);
+                            if readback_value /= x"FFFFFFFF00000000" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"06";
+                                bist_status(5) <= '1';
+                            end if;
+                            -- Write pattern to register 7
+                            ctrl_registers(7) <= x"0000FFFFFFFF0000";
+
+                        when 38 =>
+                            -- Verify register 7
+                            readback_value := ctrl_registers(7);
+                            if readback_value /= x"0000FFFFFFFF0000" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"07";
+                                bist_status(5) <= '1';
+                            end if;
+                            -- Write pattern to register 8
+                            ctrl_registers(8) <= x"AAAAAAAAAAAAAAAA";
+
+                        when 39 =>
+                            -- Verify register 8
+                            readback_value := ctrl_registers(8);
+                            if readback_value /= x"AAAAAAAAAAAAAAAA" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"08";
+                                bist_status(5) <= '1';
+                            end if;
+                            -- Write pattern to register 9
+                            ctrl_registers(9) <= x"5555555555555555";
 
                         when 40 =>
+                            -- Verify register 9 and finalize test
+                            readback_value := ctrl_registers(9);
+                            if readback_value /= x"5555555555555555" then
+                                register_test_result := '0';
+                                bist_error_count <= bist_error_count + 1;
+                                bist_failed_addr <= x"09";
+                                bist_status(5) <= '1';
+                            end if;
+                            -- Set register test result
+                            bist_status(4) <= register_test_result;
+
+                        when 50 =>
+                            -- Restore original register values
+                            for i in 0 to 9 loop
+                                ctrl_registers(i) <= saved_reg_values(i);
+                            end loop;
+
+                        when 60 =>
                             -- Complete BIST
                             bist_status(0) <= '0';  -- Clear running flag
                             -- Overall pass if all enabled tests passed
@@ -581,8 +725,8 @@ begin
                                     end if;
 
                                 when x"02" => -- Read Register (Control or Status)
-                                    -- Extended to support control register read-back (0x00-0x0C) and diagnostics (0x1A, 0x1B, 0x1C, 0x1D)
-                                    if (addr_int >= 0 and addr_int <= 12) or (addr_int >= 16 and addr_int <= 29) then
+                                    -- Extended to support control register read-back (0x00-0x0C) and diagnostics (0x1A-0x1E)
+                                    if (addr_int >= 0 and addr_int <= 12) or (addr_int >= 16 and addr_int <= 30) then
                                         -- Control register read-back (0x00-0x0C including watchdog, IRQ, BIST)
                                         if addr_int >= 0 and addr_int <= 12 then
                                             response_data <= ctrl_registers(addr_int);
@@ -633,6 +777,13 @@ begin
                                         elsif addr_int = 29 then
                                             -- Return BIST status
                                             response_data <= (63 downto 8 => '0') & bist_status;
+                                        -- BIST diagnostics register (0x1E = 30)
+                                        elsif addr_int = 30 then
+                                            -- Return BIST error details
+                                            response_data <= (63 downto 24 => '0') &       -- Reserved
+                                                            bist_failed_addr &              -- [23:16] Last failed register address
+                                                            std_logic_vector(bist_error_count) &  -- [15:8] Mismatch count
+                                                            bist_status;                    -- [7:0] BIST status (duplicate for convenience)
                                         end if;
                                         -- Start CRC calculation for response
                                         tx_crc_calc <= crc8_update(x"00", x"02"); -- Response header
