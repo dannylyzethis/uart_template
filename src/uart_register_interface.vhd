@@ -37,7 +37,21 @@ entity uart_register_interface is
         status_reg4     : in  std_logic_vector(63 downto 0);
         status_reg5     : in  std_logic_vector(63 downto 0);
         status_read_strobe : out std_logic_vector(5 downto 0);
-        
+
+        -- GPIO outputs (256 bits total = 4 x 64-bit registers, addresses 0x06-0x09)
+        gpio_out0       : out std_logic_vector(63 downto 0);
+        gpio_out1       : out std_logic_vector(63 downto 0);
+        gpio_out2       : out std_logic_vector(63 downto 0);
+        gpio_out3       : out std_logic_vector(63 downto 0);
+        gpio_write_strobe : out std_logic_vector(3 downto 0);
+
+        -- GPIO inputs (256 bits total = 4 x 64-bit registers, addresses 0x16-0x19)
+        gpio_in0        : in  std_logic_vector(63 downto 0);
+        gpio_in1        : in  std_logic_vector(63 downto 0);
+        gpio_in2        : in  std_logic_vector(63 downto 0);
+        gpio_in3        : in  std_logic_vector(63 downto 0);
+        gpio_read_strobe : out std_logic_vector(3 downto 0);
+
         -- I2C interface 0
         i2c0_sda        : inout std_logic;
         i2c0_scl        : inout std_logic;
@@ -159,8 +173,8 @@ architecture behavioral of uart_register_interface is
     signal calc_crc   : std_logic_vector(7 downto 0);
     signal addr_match : std_logic := '0';  -- Address matched flag
     
-    -- Internal control registers
-    type ctrl_reg_array_type is array (0 to 5) of std_logic_vector(63 downto 0);
+    -- Internal control registers (0-5: system/I2C/SPI, 6-9: GPIO)
+    type ctrl_reg_array_type is array (0 to 9) of std_logic_vector(63 downto 0);
     signal ctrl_registers : ctrl_reg_array_type := (others => (others => '0'));
     
     -- Control signals
@@ -185,6 +199,8 @@ architecture behavioral of uart_register_interface is
     -- Internal strobe signals for reading outputs
     signal ctrl_write_strobe_int : std_logic_vector(5 downto 0);
     signal status_read_strobe_int : std_logic_vector(5 downto 0);
+    signal gpio_write_strobe_int : std_logic_vector(3 downto 0);
+    signal gpio_read_strobe_int : std_logic_vector(3 downto 0);
 
     -- Timeout and watchdog
     constant TIMEOUT_CYCLES : integer := 1_000_000;  -- 10ms at 100MHz (safety timeout)
@@ -239,6 +255,8 @@ begin
                 tx_send <= '0';
                 ctrl_write_strobe_int <= (others => '0');
                 status_read_strobe_int <= (others => '0');
+                gpio_write_strobe_int <= (others => '0');
+                gpio_read_strobe_int <= (others => '0');
                 ctrl_registers <= (others => (others => '0'));
                 timeout_counter <= 0;
                 timeout_error <= '0';
@@ -247,6 +265,8 @@ begin
                 -- Clear strobes by default
                 ctrl_write_strobe_int <= (others => '0');
                 status_read_strobe_int <= (others => '0');
+                gpio_write_strobe_int <= (others => '0');
+                gpio_read_strobe_int <= (others => '0');
                 tx_send <= '0';
                 cmd_valid_int <= '0';
 
@@ -375,27 +395,46 @@ begin
                             
                             case cmd_byte is
                                 when x"01" => -- Write Control Register
-                                    if addr_int >= 0 and addr_int <= 5 then
+                                    if addr_int >= 0 and addr_int <= 9 then  -- 0x00-0x09 (includes GPIO)
                                         ctrl_registers(addr_int) <= data_word;
-                                        ctrl_write_strobe_int(addr_int) <= '1';
+                                        -- Strobe system/I2C/SPI registers (0-5)
+                                        if addr_int <= 5 then
+                                            ctrl_write_strobe_int(addr_int) <= '1';
+                                        -- Strobe GPIO registers (6-9)
+                                        elsif addr_int >= 6 and addr_int <= 9 then
+                                            gpio_write_strobe_int(addr_int - 6) <= '1';
+                                        end if;
                                         state <= IDLE;
                                     else
                                         cmd_error_int <= '1';
                                         state <= IDLE;
                                     end if;
-                                
+
                                 when x"02" => -- Read Status Register
-                                    if addr_int >= 16 and addr_int <= 21 then -- 0x10-0x15
-                                        case addr_int is
-                                            when 16 => response_data <= status_reg0;
-                                            when 17 => response_data <= status_reg1;
-                                            when 18 => response_data <= status_reg2;
-                                            when 19 => response_data <= status_reg3;
-                                            when 20 => response_data <= status_reg4;
-                                            when 21 => response_data <= status_reg5;
-                                            when others => response_data <= (others => '0');
-                                        end case;
-                                        status_read_strobe_int(addr_int - 16) <= '1';
+                                    if addr_int >= 16 and addr_int <= 25 then -- 0x10-0x19 (includes GPIO)
+                                        -- System/I2C/SPI status registers (0x10-0x15)
+                                        if addr_int <= 21 then
+                                            case addr_int is
+                                                when 16 => response_data <= status_reg0;
+                                                when 17 => response_data <= status_reg1;
+                                                when 18 => response_data <= status_reg2;
+                                                when 19 => response_data <= status_reg3;
+                                                when 20 => response_data <= status_reg4;
+                                                when 21 => response_data <= status_reg5;
+                                                when others => response_data <= (others => '0');
+                                            end case;
+                                            status_read_strobe_int(addr_int - 16) <= '1';
+                                        -- GPIO input registers (0x16-0x19)
+                                        elsif addr_int >= 22 and addr_int <= 25 then
+                                            case addr_int is
+                                                when 22 => response_data <= gpio_in0;
+                                                when 23 => response_data <= gpio_in1;
+                                                when 24 => response_data <= gpio_in2;
+                                                when 25 => response_data <= gpio_in3;
+                                                when others => response_data <= (others => '0');
+                                            end case;
+                                            gpio_read_strobe_int(addr_int - 22) <= '1';
+                                        end if;
                                         -- Start CRC calculation for response
                                         tx_crc_calc <= crc8_update(x"00", x"02"); -- Response header
                                         state <= TX_RESPONSE;
@@ -503,10 +542,18 @@ begin
     ctrl_reg3 <= ctrl_registers(3);
     ctrl_reg4 <= ctrl_registers(4);
     ctrl_reg5 <= ctrl_registers(5);
-    
+
+    -- Output GPIO registers
+    gpio_out0 <= ctrl_registers(6);
+    gpio_out1 <= ctrl_registers(7);
+    gpio_out2 <= ctrl_registers(8);
+    gpio_out3 <= ctrl_registers(9);
+
     -- Output strobe signals
     ctrl_write_strobe <= ctrl_write_strobe_int;
     status_read_strobe <= status_read_strobe_int;
+    gpio_write_strobe <= gpio_write_strobe_int;
+    gpio_read_strobe <= gpio_read_strobe_int;
     
     -- Extract SPI configuration
     spi0_config <= ctrl_registers(4);  -- Control register 4 for SPI0 config

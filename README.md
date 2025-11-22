@@ -29,17 +29,18 @@ A complete, production-ready UART-based register interface for FPGA control in R
 ## ✨ Features
 
 ### Core Features
-- **64-bit Register Architecture** - Efficient data transfer with 6 control and 6 status registers
+- **64-bit Register Architecture** - Efficient data transfer with 10 control and 10 status registers
 - **CRC-8 Error Detection** - Robust communication with automatic error checking
 - **Device Addressing** - Multi-drop support with unique device addresses (0-254) + broadcast (255)
 - **Register-Based Commands** - No text parsing overhead for maximum performance
 - **Timeout Protection** - Automatic recovery from incomplete UART packets
-- **Clock Domain Crossing** - Proper synchronization for asynchronous UART operation
+- **Clock Domain Crossing** - Three-FF synchronizer for asynchronous UART operation
 
 ### Peripheral Support
 - **Dual I2C Masters** - Independent 100kHz/400kHz I2C controllers
 - **Dual SPI Masters** - Configurable CPOL/CPHA, 5-32 bit word length, up to 50MHz
 - **4 Chip Selects per SPI** - Support for multiple SPI devices
+- **GPIO Interface** - 256 output bits + 256 input bits (4 banks × 64 bits each)
 - **Real-time Status Monitoring** - Current, voltage, and performance counters
 
 ### Software Integration
@@ -60,17 +61,21 @@ A complete, production-ready UART-based register interface for FPGA control in R
 │   LabVIEW)  │             │                      │               └─────────────┘
 └─────────────┘             │  ┌────────────────┐  │
                             │  │ Control Regs   │  │               ┌─────────────┐
-                            │  │   0x00-0x05    │  │    I2C0/1     │  External   │
+                            │  │   0x00-0x09    │  │    I2C0/1     │  External   │
                             │  └────────────────┘  │◄─────────────►│  I2C        │
                             │  ┌────────────────┐  │               │  Devices    │
                             │  │ Status Regs    │  │               └─────────────┘
-                            │  │   0x10-0x15    │  │
+                            │  │   0x10-0x19    │  │
                             │  └────────────────┘  │               ┌─────────────┐
                             │                      │    SPI0/1     │  External   │
                             │  ┌────────────────┐  │◄─────────────►│  SPI        │
-                            │  │ I2C/SPI        │  │               │  Devices    │
+                            │  │ I2C/SPI/GPIO   │  │               │  Devices    │
                             │  │ Controllers    │  │               └─────────────┘
-                            └──────────────────────┘
+                            └──────────────────────┘               ┌─────────────┐
+                                                       GPIO 0-3    │  External   │
+                                                    ◄─────────────►│  GPIO       │
+                                                                   │  Devices    │
+                                                                   └─────────────┘
 ```
 
 ### Register Map
@@ -84,6 +89,10 @@ A complete, production-ready UART-based register interface for FPGA control in R
 | 0x03 | CTRL_SPI_DATA | SPI transmit data (2x32-bit) |
 | 0x04 | CTRL_SPI0_CONFIG | SPI0 configuration |
 | 0x05 | CTRL_SPI1_CONFIG | SPI1 configuration |
+| 0x06 | CTRL_GPIO0 | GPIO output bank 0 (64-bit) |
+| 0x07 | CTRL_GPIO1 | GPIO output bank 1 (64-bit) |
+| 0x08 | CTRL_GPIO2 | GPIO output bank 2 (64-bit) |
+| 0x09 | CTRL_GPIO3 | GPIO output bank 3 (64-bit) |
 
 #### Status Registers (Read Operations)
 | Address | Name | Description |
@@ -94,6 +103,10 @@ A complete, production-ready UART-based register interface for FPGA control in R
 | 0x13 | STATUS_SPI_DATA | SPI received data (2x32-bit) |
 | 0x14 | STATUS_SWITCH | Switch position readback |
 | 0x15 | STATUS_COUNTERS | Performance counters |
+| 0x16 | STATUS_GPIO0 | GPIO input bank 0 (64-bit) |
+| 0x17 | STATUS_GPIO1 | GPIO input bank 1 (64-bit) |
+| 0x18 | STATUS_GPIO2 | GPIO input bank 2 (64-bit) |
+| 0x19 | STATUS_GPIO3 | GPIO input bank 3 (64-bit) |
 
 ---
 
@@ -196,6 +209,7 @@ uart_template/
 - 2 UART pins (RX, TX) - 3.3V CMOS
 - 4 I2C pins (2x SDA, 2x SCL) - Open-drain with pull-ups
 - 12 SPI pins (2x SCLK, MOSI, MISO, 4x CS each)
+- Up to 512 GPIO pins (256 outputs + 256 inputs) - User-configurable
 
 ### Host PC
 - Serial port (USB-to-UART adapter)
@@ -261,6 +275,25 @@ with UARTRegisterInterface(port='/dev/ttyUSB0') as uart:
     # Read received data
     voltages = uart.read_voltages()
     i2c_rx = voltages['i2c0_rx']
+```
+
+### Python - GPIO Operations
+```python
+with UARTRegisterInterface(port='/dev/ttyUSB0') as uart:
+    # Set entire GPIO output bank
+    uart.set_gpio_output(bank=0, value=0xDEADBEEFCAFEBABE)
+
+    # Set individual GPIO bits
+    uart.set_gpio_bit(bank=1, bit=5, value=True)   # Set bit 5 high
+    uart.set_gpio_bit(bank=1, bit=10, value=False) # Set bit 10 low
+
+    # Read GPIO input bank
+    gpio_inputs = uart.get_gpio_input(bank=0)
+    print(f"GPIO Bank 0: 0x{gpio_inputs:016X}")
+
+    # Read individual GPIO bit
+    bit_state = uart.get_gpio_bit(bank=0, bit=7)
+    print(f"Bit 7 is {'HIGH' if bit_state else 'LOW'}")
 ```
 
 ---
@@ -422,6 +455,7 @@ SOFTWARE.
 | Register Interface | ✅ Complete |
 | I2C Master | ✅ Complete |
 | SPI Master | ✅ Complete |
+| GPIO Interface | ✅ Complete |
 | Timeout/Error Recovery | ✅ Complete |
 | Python Library | ✅ Complete |
 | Documentation | ✅ Complete |

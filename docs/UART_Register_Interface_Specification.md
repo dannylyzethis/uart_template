@@ -52,25 +52,30 @@ The UART Register Interface provides a robust, high-speed communication channel 
 │   LabVIEW   │◄──────────►│  UART Register      │◄─────────────►│   RF Test   │
 │ Test System │  115200bps  │     Interface       │   Signals     │  Hardware   │
 └─────────────┘             │                     │               └─────────────┘
-                            │  ┌───────────────┐  │                       
+                            │  ┌───────────────┐  │
                             │  │ Control Regs  │  │               ┌─────────────┐
-                            │  │   0x00-0x05   │  │    I2C0/1     │   External  │
+                            │  │   0x00-0x09   │  │    I2C0/1     │   External  │
                             │  └───────────────┘  │◄─────────────►│ I2C Devices │
                             │  ┌───────────────┐  │               └─────────────┘
-                            │  │ Status Regs   │  │                       
-                            │  │   0x10-0x15   │  │               ┌─────────────┐
+                            │  │ Status Regs   │  │
+                            │  │   0x10-0x19   │  │               ┌─────────────┐
                             │  └───────────────┘  │    SPI0/1     │   External  │
                             │                     │◄─────────────►│ SPI Devices │
+                            │                     │               └─────────────┘
+                            │                     │               ┌─────────────┐
+                            │                     │   GPIO 0-3    │   External  │
+                            │                     │◄─────────────►│GPIO Devices │
                             └─────────────────────┘               └─────────────┘
 ```
 
 ### 2.2 Core Components
 - **UART Controller:** 115200 baud, 8N1 configuration
-- **Register Bank:** 6 control + 6 status registers (64-bit each)
+- **Register Bank:** 10 control + 10 status registers (64-bit each)
 - **CRC Engine:** CRC-8 polynomial (0x07) for error detection
 - **I2C Masters:** Dual I2C controllers for sensor communication
 - **SPI Masters:** Dual SPI controllers with configurable parameters
-- **Clock Domain Crossing:** Two-FF synchronizer for UART RX
+- **GPIO Interface:** 4 output banks + 4 input banks (256 bits each direction)
+- **Clock Domain Crossing:** Three-FF synchronizer for UART RX
 
 ---
 
@@ -192,6 +197,36 @@ end function;
 | 35:32 | CHIP_SEL | Chip select (4-bit one-hot) |
 | 31:0 | Reserved | Future expansion |
 
+#### Register 0x06: GPIO Output Bank 0
+| Bits | Field | Description |
+|------|-------|-------------|
+| 63:0 | GPIO_OUT0 | 64-bit GPIO output bank 0 |
+
+**Description:** General-purpose output register. Each bit drives a physical GPIO pin or can be used for custom logic control. Write operations generate a strobe signal for synchronization.
+
+#### Register 0x07: GPIO Output Bank 1
+| Bits | Field | Description |
+|------|-------|-------------|
+| 63:0 | GPIO_OUT1 | 64-bit GPIO output bank 1 |
+
+**Description:** General-purpose output register for additional GPIO pins or control signals.
+
+#### Register 0x08: GPIO Output Bank 2
+| Bits | Field | Description |
+|------|-------|-------------|
+| 63:0 | GPIO_OUT2 | 64-bit GPIO output bank 2 |
+
+**Description:** General-purpose output register for additional GPIO pins or control signals.
+
+#### Register 0x09: GPIO Output Bank 3
+| Bits | Field | Description |
+|------|-------|-------------|
+| 63:0 | GPIO_OUT3 | 64-bit GPIO output bank 3 |
+
+**Description:** General-purpose output register for additional GPIO pins or control signals.
+
+**Total GPIO Outputs:** 256 bits (4 banks × 64 bits)
+
 ### 4.2 Status Registers (Read Operations)
 
 #### Register 0x10: System Status
@@ -241,6 +276,36 @@ end function;
 | 31:16 | TEST_COUNTER | Test completion counter |
 | 15:0 | ERROR_COUNTER | Error counter |
 
+#### Register 0x16: GPIO Input Bank 0
+| Bits | Field | Description |
+|------|-------|-------------|
+| 63:0 | GPIO_IN0 | 64-bit GPIO input bank 0 |
+
+**Description:** General-purpose input register. Reads the current state of 64 GPIO input pins or status signals. Updated in real-time with external pin states.
+
+#### Register 0x17: GPIO Input Bank 1
+| Bits | Field | Description |
+|------|-------|-------------|
+| 63:0 | GPIO_IN1 | 64-bit GPIO input bank 1 |
+
+**Description:** General-purpose input register for additional GPIO pins or status signals.
+
+#### Register 0x18: GPIO Input Bank 2
+| Bits | Field | Description |
+|------|-------|-------------|
+| 63:0 | GPIO_IN2 | 64-bit GPIO input bank 2 |
+
+**Description:** General-purpose input register for additional GPIO pins or status signals.
+
+#### Register 0x19: GPIO Input Bank 3
+| Bits | Field | Description |
+|------|-------|-------------|
+| 63:0 | GPIO_IN3 | 64-bit GPIO input bank 3 |
+
+**Description:** General-purpose input register for additional GPIO pins or status signals.
+
+**Total GPIO Inputs:** 256 bits (4 banks × 64 bits)
+
 ---
 
 ## 5. Interface Specifications
@@ -265,6 +330,15 @@ end function;
 - **Chip Select:** 4 independent CS signals per SPI controller
 - **Voltage Levels:** 3.3V CMOS logic levels
 
+### 5.4 GPIO Interface
+- **Output Banks:** 4 banks × 64 bits = 256 GPIO outputs
+- **Input Banks:** 4 banks × 64 bits = 256 GPIO inputs
+- **Voltage Levels:** 3.3V CMOS logic levels
+- **Update Rate:** Real-time with register write/read operations
+- **Strobe Signals:** Write and read strobe signals provided for synchronization
+- **Applications:** Custom control signals, status monitoring, test point access
+- **Pin Assignment:** User-defined based on FPGA constraints file
+
 ---
 
 ## 6. Error Handling
@@ -277,7 +351,7 @@ end function;
 ### 6.2 Invalid Address Errors
 - **Detection:** Address validation during command processing
 - **Response:** Command error flag set, no register operation
-- **Valid Ranges:** 0x00-0x05 (control), 0x10-0x15 (status)
+- **Valid Ranges:** 0x00-0x09 (control), 0x10-0x19 (status)
 
 ### 6.3 Communication Timeouts
 - **UART:** No built-in timeout (handled by host application)
@@ -388,6 +462,36 @@ Breakdown:
   DATA: 0x0123456789ABCDEF (64-bit status value)
   CRC:  Calculated from header + data
 Description: Read status register 0 from all devices
+```
+
+#### Set GPIO Output Bank 0
+```
+Command: 0x00 0x01 0x06 0xDE 0xAD 0xBE 0xEF 0xCA 0xFE 0xBA 0xBE 0xXX
+Breakdown:
+  DEV_ADDR: 0x00 (device 0)
+  CMD:      0x01 (write)
+  ADDR:     0x06 (GPIO output bank 0)
+  DATA:     0xDEADBEEFCAFEBABE (64-bit GPIO pattern)
+  CRC:      Calculated from all previous bytes
+Description: Set GPIO output bank 0 to pattern 0xDEADBEEFCAFEBABE
+```
+
+#### Read GPIO Input Bank 0
+```
+Command: 0x00 0x02 0x16 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0xXX
+Breakdown:
+  DEV_ADDR: 0x00 (device 0)
+  CMD:      0x02 (read)
+  ADDR:     0x16 (GPIO input bank 0)
+  DATA:     0x0000000000000000 (dummy data)
+  CRC:      Calculated from all previous bytes
+
+Response: 0x02 0x12 0x34 0x56 0x78 0x9A 0xBC 0xDE 0xF0 0xXX
+Breakdown:
+  HDR:  0x02 (response header)
+  DATA: 0x123456789ABCDEF0 (64-bit GPIO input state)
+  CRC:  Calculated from header + data
+Description: Read current state of GPIO input bank 0
 ```
 
 ### Appendix B: SPI Configuration Examples

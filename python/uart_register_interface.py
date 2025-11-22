@@ -24,6 +24,10 @@ class RegisterAddress(IntEnum):
     CTRL_SPI_DATA = 0x03
     CTRL_SPI0_CONFIG = 0x04
     CTRL_SPI1_CONFIG = 0x05
+    CTRL_GPIO0 = 0x06
+    CTRL_GPIO1 = 0x07
+    CTRL_GPIO2 = 0x08
+    CTRL_GPIO3 = 0x09
 
     # Status Registers (Read)
     STATUS_SYSTEM = 0x10
@@ -32,6 +36,10 @@ class RegisterAddress(IntEnum):
     STATUS_SPI_DATA = 0x13
     STATUS_SWITCH = 0x14
     STATUS_COUNTERS = 0x15
+    STATUS_GPIO0 = 0x16
+    STATUS_GPIO1 = 0x17
+    STATUS_GPIO2 = 0x18
+    STATUS_GPIO3 = 0x19
 
 
 class Command(IntEnum):
@@ -322,6 +330,44 @@ class UARTRegisterInterface:
 
         self.write_register(RegisterAddress.CTRL_SPI_DATA, value)
 
+    def set_gpio_output(self, bank: int, value: int):
+        """
+        Set GPIO output register value
+
+        Args:
+            bank: GPIO bank (0-3)
+            value: 64-bit value to write to GPIO outputs
+        """
+        if not (0 <= bank <= 3):
+            raise ValueError(f"Invalid GPIO bank: {bank} (must be 0-3)")
+
+        reg = RegisterAddress.CTRL_GPIO0 + bank
+        self.write_register(reg, value & 0xFFFFFFFFFFFFFFFF)
+
+    def set_gpio_bit(self, bank: int, bit: int, value: bool):
+        """
+        Set a single GPIO output bit
+
+        Args:
+            bank: GPIO bank (0-3)
+            bit: Bit position (0-63)
+            value: True for high, False for low
+        """
+        if not (0 <= bank <= 3):
+            raise ValueError(f"Invalid GPIO bank: {bank} (must be 0-3)")
+        if not (0 <= bit <= 63):
+            raise ValueError(f"Invalid bit position: {bit} (must be 0-63)")
+
+        reg = RegisterAddress.CTRL_GPIO0 + bank
+        current = self.read_register(reg) or 0
+
+        if value:
+            new_value = current | (1 << bit)
+        else:
+            new_value = current & ~(1 << bit)
+
+        self.write_register(reg, new_value)
+
     # ============ High-Level Status Methods ============
 
     def read_system_status(self) -> dict:
@@ -363,6 +409,44 @@ class UARTRegisterInterface:
             'i2c0_rx': (value >> 16) & 0xFFFF,
             'i2c1_rx': value & 0xFFFF,
         }
+
+    def get_gpio_input(self, bank: int) -> Optional[int]:
+        """
+        Read GPIO input register value
+
+        Args:
+            bank: GPIO bank (0-3)
+
+        Returns:
+            64-bit value from GPIO inputs, or None on error
+        """
+        if not (0 <= bank <= 3):
+            raise ValueError(f"Invalid GPIO bank: {bank} (must be 0-3)")
+
+        reg = RegisterAddress.STATUS_GPIO0 + bank
+        return self.read_register(reg)
+
+    def get_gpio_bit(self, bank: int, bit: int) -> Optional[bool]:
+        """
+        Read a single GPIO input bit
+
+        Args:
+            bank: GPIO bank (0-3)
+            bit: Bit position (0-63)
+
+        Returns:
+            True if bit is high, False if low, None on error
+        """
+        if not (0 <= bank <= 3):
+            raise ValueError(f"Invalid GPIO bank: {bank} (must be 0-3)")
+        if not (0 <= bit <= 63):
+            raise ValueError(f"Invalid bit position: {bit} (must be 0-63)")
+
+        value = self.get_gpio_input(bank)
+        if value is None:
+            return None
+
+        return bool((value >> bit) & 1)
 
     def get_statistics(self) -> dict:
         """Get communication statistics"""
@@ -421,7 +505,25 @@ def main():
             voltages = uart.read_voltages()
             print(f"   Voltages: {voltages}")
 
-            # 5. Display statistics
+            # 6. GPIO operations
+            print("\n7. Setting GPIO outputs...")
+            uart.set_gpio_output(bank=0, value=0xDEADBEEFCAFEBABE)
+            print("   GPIO bank 0 set to 0xDEADBEEFCAFEBABE")
+
+            print("8. Setting individual GPIO bits...")
+            uart.set_gpio_bit(bank=1, bit=5, value=True)
+            uart.set_gpio_bit(bank=1, bit=10, value=False)
+            print("   GPIO bank 1, bit 5 = HIGH, bit 10 = LOW")
+
+            print("9. Reading GPIO inputs...")
+            gpio_in0 = uart.get_gpio_input(bank=0)
+            print(f"   GPIO input bank 0: 0x{gpio_in0:016X}" if gpio_in0 is not None else "   GPIO read failed")
+
+            print("10. Reading individual GPIO input bit...")
+            bit_value = uart.get_gpio_bit(bank=0, bit=7)
+            print(f"   GPIO bank 0, bit 7 = {'HIGH' if bit_value else 'LOW'}" if bit_value is not None else "   Bit read failed")
+
+            # 7. Display statistics
             print("\n=== Communication Statistics ===")
             stats = uart.get_statistics()
             for key, value in stats.items():
