@@ -1057,14 +1057,15 @@ begin
                             case cmd_byte is
                                 when x"01" => -- Write Control Register
                                     if addr_int >= 0 and addr_int <= 15 then  -- 0x00-0x0F (includes GPIO + watchdog + IRQ + BIST + GPIO edge + history)
-                                        if addr_int <= 12 then
+                                        -- Block writes to ctrl_registers during BIST to prevent corruption
+                                        if addr_int <= 12 and bist_running = '0' then
                                             ctrl_registers(addr_int) <= data_word;
                                         end if;
-                                        -- Strobe system/I2C/SPI registers (0-5)
-                                        if addr_int <= 5 then
+                                        -- Strobe system/I2C/SPI registers (0-5) - block during BIST
+                                        if addr_int <= 5 and bist_running = '0' then
                                             ctrl_write_strobe_int(addr_int) <= '1';
-                                        -- Strobe GPIO registers (6-9)
-                                        elsif addr_int >= 6 and addr_int <= 9 then
+                                        -- Strobe GPIO registers (6-9) - block during BIST
+                                        elsif addr_int >= 6 and addr_int <= 9 and bist_running = '0' then
                                             gpio_write_strobe_int(addr_int - 6) <= '1';
                                         -- Register 10 (0x0A) is watchdog config - no strobe needed
                                         -- Register 11 (0x0B) is IRQ enable mask
