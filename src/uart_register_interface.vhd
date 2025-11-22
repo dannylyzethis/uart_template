@@ -290,6 +290,8 @@ architecture behavioral of uart_register_interface is
     -- Edge detection working signals
     signal gpio0_edges        : std_logic_vector(31 downto 0) := (others => '0');
     signal gpio1_edges        : std_logic_vector(31 downto 0) := (others => '0');
+    signal gpio_edge_clear    : std_logic_vector(63 downto 0) := (others => '0');  -- Clear request from main FSM
+    signal irq_status_clear   : std_logic_vector(7 downto 0) := (others => '0');   -- Clear request from main FSM
 
     -- Transaction History Buffer (registers 0x0F control, 0x20 data)
     -- Stores last 16 UART transactions for debugging
@@ -307,6 +309,7 @@ architecture behavioral of uart_register_interface is
     signal perf_min_latency   : unsigned(15 downto 0) := (others => '1');  -- Init to max value
     signal perf_max_latency   : unsigned(15 downto 0) := (others => '0');
     signal perf_total_latency : unsigned(31 downto 0) := (others => '0');  -- For average calculation
+    signal perf_avg_latency   : unsigned(15 downto 0) := (others => '0');  -- Pre-calculated average (avoids division in read path)
     signal perf_count         : unsigned(15 downto 0) := (others => '0');
     signal transaction_start_time : unsigned(15 downto 0) := (others => '0');  -- Capture start timestamp
     signal measure_latency    : std_logic := '0';  -- Flag to indicate measurement in progress
@@ -400,9 +403,11 @@ begin
                 end loop;
 
                 -- Detect edges on Bank 1 (pins 32-63, mapped to gpio_in1[0-31])
+                -- NOTE: Bank 1 shares edge configuration with Bank 0 (pin N of Bank 1 uses same config as pin N of Bank 0)
+                -- This saves register space but means both banks must use identical edge types
                 for i in 0 to 31 loop
                     if gpio_edge_enable(32 + i) = '1' then
-                        -- Get edge type configuration for this pin
+                        -- Get edge type configuration for this pin (shared with Bank 0 pin i)
                         edge_type := gpio_edge_config((i*2)+1 downto i*2);
 
                         -- Detect rising edge
@@ -449,6 +454,15 @@ begin
                     irq_status_bits(7) <= '1';
                 end if;
 
+                -- Handle clear requests from main FSM (write-1-to-clear from software)
+                gpio_edge_status <= gpio_edge_status and not gpio_edge_clear;
+                if irq_status_clear(7) = '1' then
+                    irq_status_bits(7) <= '0';
+                end if;
+                -- Clear the clear request signals after processing
+                gpio_edge_clear <= (others => '0');
+                irq_status_clear <= (others => '0');
+
                 -- Clear edge flags after they've been latched into status
                 gpio0_edges <= (others => '0');
                 gpio1_edges <= (others => '0');
@@ -467,6 +481,7 @@ begin
                 perf_min_latency <= (others => '1');  -- Max value
                 perf_max_latency <= (others => '0');
                 perf_total_latency <= (others => '0');
+                perf_avg_latency <= (others => '0');
                 perf_count <= (others => '0');
                 transaction_start_time <= (others => '0');
                 measure_latency <= '0';
@@ -502,6 +517,14 @@ begin
                         perf_count <= perf_count + 1;
                     end if;
 
+                    -- Calculate average latency (avoid division by zero)
+                    -- Use upper 16 bits of total divided by count
+                    if perf_count > 0 then
+                        perf_avg_latency <= perf_total_latency(31 downto 16) / (perf_count + 1);  -- +1 because we just incremented
+                    else
+                        perf_avg_latency <= current_latency;  -- First sample
+                    end if;
+
                     measure_latency <= '0';
                 end if;
 
@@ -531,7 +554,7 @@ begin
                     -- Build transaction flags
                     transaction_flags := (
                         7 => crc_error_int,
-                        6 => timeout_error_int,
+                        6 => timeout_error,
                         5 => cmd_error_int,
                         4 => '0',  -- Reserved
                         3 => '0',  -- Reserved
@@ -846,9 +869,16 @@ begin
                     timeout_error <= '0';
                     -- Update timeout cycles from register 0x0A (in milliseconds)
                     -- Convert ms to cycles: timeout_ms * (CLK_FREQ / 1000)
+                    -- Note: Calculation must prevent integer overflow (saturate at MAX_TIMEOUT_CYCLES)
                     if ctrl_registers(10)(15 downto 0) /= x"0000" then
                         -- Use programmed timeout (register 0x0A, lower 16 bits = timeout in ms)
-                        timeout_cycles <= to_integer(unsigned(ctrl_registers(10)(15 downto 0))) * (CLK_FREQ / 1000);
+                        -- Saturate at MAX_TIMEOUT_CYCLES to prevent overflow
+                        -- Max valid timeout: MAX_TIMEOUT_CYCLES / (CLK_FREQ/1000) = 10M / 100k = 100ms
+                        if to_integer(unsigned(ctrl_registers(10)(15 downto 0))) > (MAX_TIMEOUT_CYCLES / (CLK_FREQ / 1000)) then
+                            timeout_cycles <= MAX_TIMEOUT_CYCLES;  -- Saturate (values >100ms clamp to 100ms)
+                        else
+                            timeout_cycles <= to_integer(unsigned(ctrl_registers(10)(15 downto 0))) * (CLK_FREQ / 1000);
+                        end if;
                     else
                         -- Timeout disabled when set to 0
                         timeout_cycles <= MAX_TIMEOUT_CYCLES;
@@ -1013,13 +1043,15 @@ begin
                                         state <= IDLE;
                                     -- Write to IRQ status register 0x1B (27) to clear interrupts (write-1-to-clear)
                                     elsif addr_int = 27 then
-                                        -- Clear bits that are written as '1'
-                                        irq_status_bits <= irq_status_bits and not data_word(7 downto 0);
+                                        -- Clear bits 0-6 directly (they're only set by main FSM)
+                                        irq_status_bits(6 downto 0) <= irq_status_bits(6 downto 0) and not data_word(6 downto 0);
+                                        -- Request clear for bit 7 (set by GPIO process, so use clear signal to avoid multiple drivers)
+                                        irq_status_clear(7) <= data_word(7);
                                         state <= IDLE;
                                     -- Write to GPIO edge status register 0x1F (31) to clear edge flags (write-1-to-clear)
                                     elsif addr_int = 31 then
-                                        -- Clear bits that are written as '1'
-                                        gpio_edge_status <= gpio_edge_status and not data_word;
+                                        -- Request clear (handled by GPIO edge detection process to avoid multiple drivers)
+                                        gpio_edge_clear <= data_word;
                                         state <= IDLE;
                                     else
                                         cmd_error_int <= '1';
@@ -1118,16 +1150,12 @@ begin
                                             end if;
                                         -- Performance metrics register (0x21 = 33)
                                         elsif addr_int = 33 then
-                                            -- Calculate and return performance statistics
+                                            -- Return pre-calculated performance statistics
                                             -- [63:48] Min latency, [47:32] Max latency, [31:16] Avg latency, [15:0] Count
-                                            if perf_count > 0 then
-                                                response_data <= std_logic_vector(perf_min_latency) &                                  -- [63:48] Min
-                                                                std_logic_vector(perf_max_latency) &                                   -- [47:32] Max
-                                                                std_logic_vector(perf_total_latency(31 downto 16) / perf_count) &      -- [31:16] Avg (simple division)
-                                                                std_logic_vector(perf_count);                                          -- [15:0]  Count
-                                            else
-                                                response_data <= (others => '0');
-                                            end if;
+                                            response_data <= std_logic_vector(perf_min_latency) &                                  -- [63:48] Min
+                                                            std_logic_vector(perf_max_latency) &                                   -- [47:32] Max
+                                                            std_logic_vector(perf_avg_latency) &                                   -- [31:16] Avg (pre-calculated, no division here!)
+                                                            std_logic_vector(perf_count);                                          -- [15:0]  Count
                                         end if;
                                         -- Start CRC calculation for response
                                         tx_crc_calc <= crc8_update(x"00", x"02"); -- Response header

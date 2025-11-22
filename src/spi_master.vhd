@@ -207,14 +207,15 @@ begin
                                     end if;
                                 else
                                     -- Odd edges: shift out next bit
-                                    if bit_counter > 0 then
-                                        mosi_int <= shift_out(bit_counter - 1);
-                                    end if;
+                                    -- bit_counter was already decremented on previous even edge, so use it directly
+                                    mosi_int <= shift_out(bit_counter);
                                 end if;
                             else
                                 -- CPHA=1 mode
+                                -- Note: edge_count starts at 0, incremented to 1 before first check, so first edge is edge 1 (odd)
                                 if (edge_count mod 2) = 1 then
-                                    -- Odd edges: shift out data
+                                    -- Odd edges (1,3,5...): shift out data
+                                    -- First edge (1): bit_counter=31, output bit 31 (correct!)
                                     mosi_int <= shift_out(bit_counter);
                                 else
                                     -- Even edges: sample MISO

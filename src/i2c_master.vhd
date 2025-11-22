@@ -130,7 +130,7 @@ begin
                         sda_out <= '1';
                         scl_out <= '1';
                         busy_int <= '0';
-                        ack_error_int <= '0';
+                        ack_error_int <= '0';  -- Clear any previous error
                         bit_counter <= 0;
                         phase := 0;
 
@@ -140,6 +140,7 @@ begin
                             data_byte <= data_in;
                             read_mode <= rw;
                             busy_int <= '1';
+                            ack_error_int <= '0';  -- Ensure error is cleared for new transaction
                             state <= START_CONDITION;
                         end if;
 
