@@ -189,11 +189,56 @@ architecture behavioral of uart_register_interface is
     signal response_data : std_logic_vector(63 downto 0);
     signal tx_crc_calc   : std_logic_vector(7 downto 0);
     
-    -- I2C/SPI control signals
-    signal i2c0_start_int : std_logic := '0';
+    -- I2C/SPI control signals (UART register interface)
+    signal i2c0_start_uart : std_logic := '0';
+    signal i2c0_addr_uart  : std_logic_vector(6 downto 0) := (others => '0');
+    signal i2c0_rw_uart    : std_logic := '0';
+    signal i2c0_data_uart  : std_logic_vector(7 downto 0) := (others => '0');
+
     signal i2c1_start_int : std_logic := '0';
     signal spi0_start_int : std_logic := '0';
     signal spi1_start_int : std_logic := '0';
+
+    -- EEPROM Boot Loader I2C signals (before arbiter)
+    signal boot_i2c_start  : std_logic := '0';
+    signal boot_i2c_addr   : std_logic_vector(6 downto 0) := (others => '0');
+    signal boot_i2c_rw     : std_logic := '0';
+    signal boot_i2c_data   : std_logic_vector(7 downto 0) := (others => '0');
+
+    -- Boot loader control/status
+    signal boot_start_cmd  : std_logic := '0';
+    signal boot_busy       : std_logic;
+    signal boot_done       : std_logic;
+    signal boot_error      : std_logic;
+    signal boot_error_code : std_logic_vector(7 downto 0);
+    signal boot_progress   : std_logic_vector(7 downto 0);
+
+    -- LUT valid flags
+    signal lut0_valid      : std_logic;
+    signal lut1_valid      : std_logic;
+    signal lut2_valid      : std_logic;
+    signal lut3_valid      : std_logic;
+
+    -- LUT RAM access signals
+    signal lut0_addr       : std_logic_vector(7 downto 0) := (others => '0');
+    signal lut0_data       : std_logic_vector(31 downto 0);
+    signal lut0_we         : std_logic := '0';
+    signal lut0_din        : std_logic_vector(31 downto 0) := (others => '0');
+
+    signal lut1_addr       : std_logic_vector(7 downto 0) := (others => '0');
+    signal lut1_data       : std_logic_vector(31 downto 0);
+    signal lut1_we         : std_logic := '0';
+    signal lut1_din        : std_logic_vector(31 downto 0) := (others => '0');
+
+    signal lut2_addr       : std_logic_vector(7 downto 0) := (others => '0');
+    signal lut2_data       : std_logic_vector(31 downto 0);
+    signal lut2_we         : std_logic := '0';
+    signal lut2_din        : std_logic_vector(31 downto 0) := (others => '0');
+
+    signal lut3_addr       : std_logic_vector(7 downto 0) := (others => '0');
+    signal lut3_data       : std_logic_vector(31 downto 0);
+    signal lut3_we         : std_logic := '0';
+    signal lut3_din        : std_logic_vector(31 downto 0) := (others => '0');
     
     -- SPI configuration registers (extracted from control registers)
     signal spi0_config    : std_logic_vector(63 downto 0);
@@ -334,6 +379,79 @@ begin
     -- Interrupt generation logic
     -- IRQ is asserted when any enabled interrupt source is active
     irq_out_int <= '1' when (irq_status_bits and irq_enable_mask) /= x"00" else '0';
+
+    -- ========================================================================
+    -- EEPROM Boot Loader Instantiation
+    -- ========================================================================
+    -- Automatically loads 4 LUTs from I2C EEPROM on power-up
+    -- Shares I2C0 bus with UART register interface (arbiter below)
+    eeprom_boot_loader_inst: entity work.eeprom_boot_loader
+        generic map (
+            CLK_FREQ    => CLK_FREQ,
+            EEPROM_ADDR => "1010000"  -- 0x50 (A0=A1=A2=GND)
+        )
+        port map (
+            clk => clk,
+            rst => rst,
+
+            -- I2C master interface (connected via arbiter)
+            i2c_start       => boot_i2c_start,
+            i2c_addr        => boot_i2c_addr,
+            i2c_rw          => boot_i2c_rw,
+            i2c_data_out    => boot_i2c_data,
+            i2c_data_in     => i2c0_data_out,
+            i2c_data_valid  => i2c0_data_valid,
+            i2c_busy        => i2c0_busy,
+            i2c_ack_error   => i2c0_ack_error,
+            i2c_done        => '0',  -- Not used by boot loader state machine
+
+            -- LUT RAM interfaces
+            lut0_addr => lut0_addr,
+            lut0_data => lut0_data,
+            lut0_we   => lut0_we,
+            lut0_din  => lut0_din,
+
+            lut1_addr => lut1_addr,
+            lut1_data => lut1_data,
+            lut1_we   => lut1_we,
+            lut1_din  => lut1_din,
+
+            lut2_addr => lut2_addr,
+            lut2_data => lut2_data,
+            lut2_we   => lut2_we,
+            lut2_din  => lut2_din,
+
+            lut3_addr => lut3_addr,
+            lut3_data => lut3_data,
+            lut3_we   => lut3_we,
+            lut3_din  => lut3_din,
+
+            -- Control/status
+            boot_start      => boot_start_cmd,
+            boot_busy       => boot_busy,
+            boot_done       => boot_done,
+            boot_error      => boot_error,
+            boot_error_code => boot_error_code,
+
+            -- LUT valid flags
+            lut0_valid   => lut0_valid,
+            lut1_valid   => lut1_valid,
+            lut2_valid   => lut2_valid,
+            lut3_valid   => lut3_valid,
+            boot_progress => boot_progress
+        );
+
+    -- ========================================================================
+    -- I2C0 Arbiter
+    -- ========================================================================
+    -- Boot loader has priority during boot_busy
+    -- UART register commands can access I2C when boot loader idle
+    i2c0_start    <= boot_i2c_start when boot_busy = '1' else i2c0_start_uart;
+    i2c0_data_in  <= boot_i2c_data when boot_busy = '1' else i2c0_data_uart;
+    -- Note: I2C address and R/W not currently used by i2c_master (single byte interface)
+    -- If multi-byte I2C is added, include these in arbiter:
+    -- i2c0_addr_mux <= boot_i2c_addr when boot_busy = '1' else i2c0_addr_uart;
+    -- i2c0_rw_mux   <= boot_i2c_rw when boot_busy = '1' else i2c0_rw_uart;
 
     -- Timestamp counter process
     -- Increments every clock cycle for precise timing measurements
@@ -899,6 +1017,21 @@ begin
                 timeout_counter <= 0;
                 timeout_error <= '0';
 
+                -- EEPROM boot loader signals
+                lut0_addr <= (others => '0');
+                lut0_we <= '0';
+                lut0_din <= (others => '0');
+                lut1_addr <= (others => '0');
+                lut1_we <= '0';
+                lut1_din <= (others => '0');
+                lut2_addr <= (others => '0');
+                lut2_we <= '0';
+                lut2_din <= (others => '0');
+                lut3_addr <= (others => '0');
+                lut3_we <= '0';
+                lut3_din <= (others => '0');
+                boot_start_cmd <= '0';
+
             else
                 -- Clear strobes by default
                 ctrl_write_strobe_int <= (others => '0');
@@ -907,6 +1040,13 @@ begin
                 gpio_read_strobe_int <= (others => '0');
                 tx_send <= '0';
                 cmd_valid_int <= '0';
+
+                -- Clear LUT write enables and boot start command (single-pulse signals)
+                lut0_we <= '0';
+                lut1_we <= '0';
+                lut2_we <= '0';
+                lut3_we <= '0';
+                boot_start_cmd <= '0';
 
                 -- Programmable timeout watchdog counter
                 if state = IDLE then
@@ -1099,6 +1239,35 @@ begin
                                         -- Request clear (handled by GPIO edge detection process to avoid multiple drivers)
                                         gpio_edge_clear <= data_word;
                                         state <= IDLE;
+                                    -- ========== EEPROM Boot Loader Register Writes ==========
+                                    -- Boot control register (0x30 = 48): Trigger manual boot
+                                    elsif addr_int = 48 then
+                                        boot_start_cmd <= data_word(0);  -- Write 1 to bit 0 to trigger boot
+                                        state <= IDLE;
+                                    -- LUT0 write (0x31 = 49): Write calibration data
+                                    elsif addr_int = 49 then
+                                        lut0_addr <= data_word(7 downto 0);     -- [7:0] LUT index
+                                        lut0_din  <= data_word(31 downto 0);    -- [31:0] Data to write
+                                        lut0_we   <= '1';  -- Enable write
+                                        state <= IDLE;
+                                    -- LUT1 write (0x32 = 50): Write correction data
+                                    elsif addr_int = 50 then
+                                        lut1_addr <= data_word(7 downto 0);
+                                        lut1_din  <= data_word(31 downto 0);
+                                        lut1_we   <= '1';
+                                        state <= IDLE;
+                                    -- LUT2 write (0x33 = 51): Write temperature compensation data
+                                    elsif addr_int = 51 then
+                                        lut2_addr <= data_word(7 downto 0);
+                                        lut2_din  <= data_word(31 downto 0);
+                                        lut2_we   <= '1';
+                                        state <= IDLE;
+                                    -- LUT3 write (0x34 = 52): Write waveform data
+                                    elsif addr_int = 52 then
+                                        lut3_addr <= data_word(7 downto 0);
+                                        lut3_din  <= data_word(31 downto 0);
+                                        lut3_we   <= '1';
+                                        state <= IDLE;
                                     else
                                         cmd_error_int <= '1';
                                         cmd_error_count <= cmd_error_count + 1;
@@ -1108,8 +1277,8 @@ begin
                                     end if;
 
                                 when x"02" => -- Read Register (Control or Status)
-                                    -- Extended to support control register read-back (0x00-0x0F) and diagnostics (0x1A-0x21)
-                                    if (addr_int >= 0 and addr_int <= 15) or (addr_int >= 16 and addr_int <= 33) then
+                                    -- Extended to support control register read-back (0x00-0x0F), diagnostics (0x1A-0x21), and EEPROM boot (0x30-0x34)
+                                    if (addr_int >= 0 and addr_int <= 15) or (addr_int >= 16 and addr_int <= 52) then
                                         -- Control register read-back (0x00-0x0C including watchdog, IRQ, BIST)
                                         if addr_int >= 0 and addr_int <= 12 then
                                             response_data <= ctrl_registers(addr_int);
@@ -1202,6 +1371,37 @@ begin
                                                             std_logic_vector(perf_max_latency) &                                   -- [47:32] Max
                                                             std_logic_vector(perf_avg_latency) &                                   -- [31:16] Avg (pre-calculated, no division here!)
                                                             std_logic_vector(perf_count);                                          -- [15:0]  Count
+                                        -- ========== EEPROM Boot Loader Registers ==========
+                                        -- Boot control/status register (0x30 = 48)
+                                        elsif addr_int = 48 then
+                                            -- [63:24] Reserved
+                                            -- [23:16] Error code (if BOOT_ERROR=1)
+                                            -- [15:8]  Boot progress (0x00-0xFF)
+                                            -- [7:4]   LUT valid flags [LUT3, LUT2, LUT1, LUT0]
+                                            -- [3]     BOOT_ERROR
+                                            -- [2]     BOOT_DONE
+                                            -- [1]     BOOT_BUSY
+                                            -- [0]     BOOT_START (write to trigger manual boot)
+                                            response_data <= (63 downto 24 => '0') &
+                                                            boot_error_code &  -- [23:16]
+                                                            boot_progress &    -- [15:8]
+                                                            lut3_valid & lut2_valid & lut1_valid & lut0_valid &  -- [7:4]
+                                                            boot_error &       -- [3]
+                                                            boot_done &        -- [2]
+                                                            boot_busy &        -- [1]
+                                                            '0';               -- [0] BOOT_START (read as 0)
+                                        -- LUT0 access register (0x31 = 49) - Calibration data
+                                        elsif addr_int = 49 then
+                                            response_data <= (63 downto 32 => '0') & lut0_data;  -- [31:0] LUT0 data
+                                        -- LUT1 access register (0x32 = 50) - Correction/linearization
+                                        elsif addr_int = 50 then
+                                            response_data <= (63 downto 32 => '0') & lut1_data;  -- [31:0] LUT1 data
+                                        -- LUT2 access register (0x33 = 51) - Temperature compensation
+                                        elsif addr_int = 51 then
+                                            response_data <= (63 downto 32 => '0') & lut2_data;  -- [31:0] LUT2 data
+                                        -- LUT3 access register (0x34 = 52) - Waveform/pattern data
+                                        elsif addr_int = 52 then
+                                            response_data <= (63 downto 32 => '0') & lut3_data;  -- [31:0] LUT3 data
                                         end if;
                                         -- Start CRC calculation for response
                                         tx_crc_calc <= crc8_update(x"00", x"02"); -- Response header
@@ -1331,12 +1531,12 @@ begin
     spi1_config <= ctrl_registers(5);  -- Control register 5 for SPI1 config
     
     -- I2C control outputs
-    i2c0_start <= i2c0_start_int;
+    -- Note: i2c0_start and i2c0_data_in assigned by arbiter (line 449-450)
     i2c1_start <= i2c1_start_int;
-    
+
     -- I2C data outputs (from control registers)
-    i2c0_data_in <= ctrl_registers(2)(15 downto 8);   -- Byte 1 of ctrl_reg2
-    i2c1_data_in <= ctrl_registers(2)(7 downto 0);    -- Byte 0 of ctrl_reg2
+    i2c0_data_uart <= ctrl_registers(2)(15 downto 8);   -- Byte 1 of ctrl_reg2 (UART path)
+    i2c1_data_in   <= ctrl_registers(2)(7 downto 0);    -- Byte 0 of ctrl_reg2
     
     -- SPI control outputs
     spi0_start <= spi0_start_int;
@@ -1355,21 +1555,21 @@ begin
     begin
         if rising_edge(clk) then
             if rst = '1' then
-                i2c0_start_int <= '0';
+                i2c0_start_uart <= '0';
                 i2c1_start_int <= '0';
                 spi0_start_int <= '0';
                 spi1_start_int <= '0';
             else
                 -- Generate single-cycle start pulses when control registers are written
-                i2c0_start_int <= '0';
+                i2c0_start_uart <= '0';
                 i2c1_start_int <= '0';
                 spi0_start_int <= '0';
                 spi1_start_int <= '0';
-                
+
                 -- Trigger I2C transactions when ctrl_reg2 is written
                 if ctrl_write_strobe_int(2) = '1' then
                     if ctrl_registers(2)(63) = '1' then  -- I2C0 enable bit
-                        i2c0_start_int <= '1';
+                        i2c0_start_uart <= '1';
                     end if;
                     if ctrl_registers(2)(31) = '1' then  -- I2C1 enable bit
                         i2c1_start_int <= '1';
