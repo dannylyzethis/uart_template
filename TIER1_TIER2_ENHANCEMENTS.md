@@ -243,9 +243,12 @@ Bits 7-5: Reserved
 | 0x07 | CTRL_GPIO1 | GPIO output bank 1 |
 | 0x08 | CTRL_GPIO2 | GPIO output bank 2 |
 | 0x09 | CTRL_GPIO3 | GPIO output bank 3 |
-| **0x0A** | **CTRL_WATCHDOG** | **Programmable timeout (NEW)** |
-| **0x0B** | **CTRL_IRQ_ENABLE** | **IRQ enable mask (NEW)** |
-| **0x0C** | **CTRL_BIST** | **BIST control (NEW)** |
+| **0x0A** | **CTRL_WATCHDOG** | **Programmable timeout (TIER 1)** |
+| **0x0B** | **CTRL_IRQ_ENABLE** | **IRQ enable mask (TIER 1)** |
+| **0x0C** | **CTRL_BIST** | **BIST control (TIER 2)** |
+| **0x0D** | **CTRL_GPIO_EDGE_EN** | **GPIO edge detection enable (TIER 2)** |
+| **0x0E** | **CTRL_GPIO_EDGE_CFG** | **GPIO edge type config (TIER 2)** |
+| **0x0F** | **CTRL_HISTORY** | **Transaction history control (TIER 2)** |
 
 ### Status Registers (Read)
 | Address | Name | Description |
@@ -260,10 +263,14 @@ Bits 7-5: Reserved
 | 0x17 | STATUS_GPIO1 | GPIO input bank 1 |
 | 0x18 | STATUS_GPIO2 | GPIO input bank 2 |
 | 0x19 | STATUS_GPIO3 | GPIO input bank 3 |
-| **0x1A** | **STATUS_DIAGNOSTICS** | **Communication statistics (NEW)** |
-| **0x1B** | **STATUS_IRQ** | **IRQ status bits (NEW)** |
-| **0x1C** | **STATUS_TIMESTAMP** | **Free-running timestamp (NEW)** |
-| **0x1D** | **STATUS_BIST** | **BIST results (NEW)** |
+| **0x1A** | **STATUS_DIAGNOSTICS** | **Communication statistics (TIER 1)** |
+| **0x1B** | **STATUS_IRQ** | **IRQ status bits (TIER 1)** |
+| **0x1C** | **STATUS_TIMESTAMP** | **Free-running timestamp (TIER 2)** |
+| **0x1D** | **STATUS_BIST** | **BIST results (TIER 2)** |
+| **0x1E** | **STATUS_BIST_DIAG** | **BIST diagnostics (TIER 2)** |
+| **0x1F** | **STATUS_GPIO_EDGE** | **GPIO edge status (TIER 2)** |
+| **0x20** | **STATUS_HISTORY_DATA** | **Transaction history data (TIER 2)** |
+| **0x21** | **STATUS_PERF_METRICS** | **Performance metrics (TIER 2)** |
 
 ---
 
@@ -286,16 +293,22 @@ Bits 7-5: Reserved
    - Added IRQ output pin assignment
 
 ### Resource Impact (Estimated for Artix-7)
-- **LUTs:** +100 (~22% increase from 450 to 550)
+- **LUTs:** +300 (~67% increase from 450 to 750)
   - Interrupt logic: +30
   - FIFO buffers: +50
-  - Diagnostics/BIST: +20
-- **Flip-Flops:** +150 (~43% increase from 350 to 500)
+  - Diagnostics/BIST: +40
+  - GPIO edge detection: +80
+  - Transaction history: +70
+  - Performance metrics: +30
+- **Flip-Flops:** +1400 (~400% increase from 350 to 1750)
   - FIFO storage: +64 (32 bytes * 2)
   - Timestamp counter: +64
   - Diagnostic counters: +22
+  - GPIO edge detection: +128 (64 pins x 2 states)
+  - Transaction history: +1024 (16 entries x 64 bits)
+  - Performance metrics: +96
 - **Max Frequency:** >150MHz (unchanged)
-- **BRAM:** 0 (still no BRAM usage)
+- **BRAM:** 0 (still no BRAM usage - transaction history uses distributed RAM)
 
 ### Backward Compatibility
 ✅ **Fully backward compatible**
@@ -457,6 +470,211 @@ def set_timeout(self, timeout_ms):
 
 ---
 
+## TIER 2 - Additional Enhancements (✅ 3 COMPLETE)
+
+### 8. GPIO Edge Detection with Interrupts (Registers 0x0D, 0x0E, 0x1F)
+**Status:** ✅ Complete
+
+**Description:**
+Event-driven GPIO monitoring system that detects rising/falling edges on configured pins and generates interrupts.
+
+**New Registers:**
+- **0x0D (13)** - GPIO Edge Detection Enable (write)
+- **0x0E (14)** - GPIO Edge Type Configuration (write)
+- **0x1F (31)** - GPIO Edge Status (read/write-1-to-clear)
+
+**Register Format (0x0D - Enable):**
+```
+[63:32] - Bank 1 pin enable mask (bits 0-31 for gpio_in1[31:0])
+[31:0]  - Bank 0 pin enable mask (bits 0-31 for gpio_in0[31:0])
+```
+
+**Register Format (0x0E - Edge Type):**
+```
+[63:0]  - Edge type for pins 0-31 (2 bits per pin, packed)
+          Bits [1:0]   = pin 0:  00=disabled, 01=rising, 10=falling, 11=both
+          Bits [3:2]   = pin 1
+          ...
+          Bits [63:62] = pin 31
+```
+
+**Register Format (0x1F - Status):**
+```
+[63:32] - Bank 1 edge detected flags (write 1 to clear)
+[31:0]  - Bank 0 edge detected flags (write 1 to clear)
+```
+
+**Interrupt Integration:**
+- Uses IRQ bit 7 (previously reserved for GPIO input change)
+- Interrupt fires when any enabled pin detects configured edge
+- Read register 0x1F to see which pins triggered
+- Write 1 to clear individual edge flags
+
+**Monitoring Capacity:**
+- Up to 64 GPIO pins (banks 0-1)
+- Each pin independently configurable
+- Can be extended to banks 2-3 if needed
+
+**Benefits:**
+- Event-driven GPIO eliminates polling overhead
+- Configurable edge detection (rising/falling/both)
+- Multiple pins can be monitored simultaneously
+- Essential for real-time event detection
+- Low CPU overhead
+
+**Usage Example:**
+```python
+# Monitor GPIO Bank 0, pin 5 for rising edges
+uart.write_register(0x0D, 0x00000020)  # Enable pin 5
+uart.write_register(0x0E, 0x00000020)  # Configure rising edge (01 at bits 11:10)
+# Enable GPIO interrupt
+uart.write_register(0x0B, uart.read_register(0x0B) | 0x80)  # Enable bit 7
+# Wait for interrupt...
+# Read which pin triggered
+status = uart.read_register(0x1F)
+if status & 0x20:  # Pin 5 triggered
+    print("Pin 5 rising edge detected!")
+# Clear the flag
+uart.write_register(0x1F, 0x00000020)
+```
+
+---
+
+### 9. Transaction History Buffer (Registers 0x0F, 0x20)
+**Status:** ✅ Complete
+
+**Description:**
+Circular buffer that logs the last 16 UART transactions with timestamps for debugging intermittent issues.
+
+**New Registers:**
+- **0x0F (15)** - Transaction History Control/Status (read/write)
+- **0x20 (32)** - Transaction History Data (read-only, auto-increment)
+
+**Register Format (0x0F - Control/Status):**
+```
+[15:8]  - Entry count (read-only, number of transactions in buffer)
+[7:0]   - Control: write 1 to bit 0 to clear history buffer
+```
+
+**Register Format (0x20 - History Data):**
+```
+Each transaction entry (auto-increments on read):
+[63:32] - Timestamp (lower 32 bits of system timestamp counter)
+[31:24] - Command byte (0x01=write, 0x02=read, etc.)
+[23:16] - Address byte
+[15:8]  - Status flags:
+          Bit 7: CRC error occurred
+          Bit 6: Timeout error occurred
+          Bit 5: Command error occurred
+          Bits 4-0: Reserved
+[7:0]   - Entry index (0-15)
+```
+
+**Operation:**
+1. Buffer automatically captures each transaction
+2. Stores timestamp, command, address, and error flags
+3. Circular buffer holds last 16 transactions
+4. Read register 0x0F to check entry count
+5. Read register 0x20 repeatedly to fetch each transaction (auto-increments)
+6. Write to register 0x0F to clear buffer
+
+**Benefits:**
+- Post-mortem debugging of intermittent failures
+- Timestamp allows correlation with external events
+- Captures error conditions for each transaction
+- Circular buffer automatically manages overflow
+- No performance impact on normal operation
+
+**Usage Example:**
+```python
+# Check how many transactions are logged
+status = uart.read_register(0x0F)
+count = (status >> 8) & 0xFF
+print(f"History buffer has {count} entries")
+
+# Read all transactions
+for i in range(count):
+    entry = uart.read_register(0x20)
+    timestamp = (entry >> 32) & 0xFFFFFFFF
+    cmd = (entry >> 24) & 0xFF
+    addr = (entry >> 16) & 0xFF
+    flags = (entry >> 8) & 0xFF
+    index = entry & 0xFF
+    print(f"Entry {index}: cmd=0x{cmd:02X}, addr=0x{addr:02X}, "
+          f"timestamp={timestamp}, errors={'CRC ' if flags & 0x80 else ''}"
+          f"{'TIMEOUT ' if flags & 0x40 else ''}{'CMD' if flags & 0x20 else ''}")
+
+# Clear history buffer
+uart.write_register(0x0F, 0x01)
+```
+
+---
+
+### 10. Performance Metrics Tracking (Register 0x21)
+**Status:** ✅ Complete
+
+**Description:**
+Automatic tracking of transaction latency statistics for performance profiling and optimization.
+
+**New Register:**
+- **0x21 (33)** - Performance Metrics (read-only)
+
+**Register Format (0x21):**
+```
+[63:48] - Minimum latency (16-bit, in system clock cycles)
+[47:32] - Maximum latency (16-bit, in system clock cycles)
+[31:16] - Average latency (16-bit, in system clock cycles)
+[15:0]  - Transaction count (16-bit, number of transactions measured)
+```
+
+**Measurement:**
+- Latency measured from command received to response sent
+- Measured in system clock cycles (10ns @ 100MHz)
+- Statistics automatically updated for each transaction
+- Min starts at max value, updated on first transaction
+- Average calculated as total_latency / count
+
+**Benefits:**
+- Identify performance bottlenecks
+- Detect timing anomalies
+- Validate system timing requirements
+- Optimize critical paths
+- Production performance monitoring
+
+**Latency Resolution:**
+- 16-bit counter allows measuring up to 655,350ns (655µs) @ 100MHz
+- Sufficient for typical UART transaction latencies (< 100µs)
+- Wraps around if latency exceeds range (unlikely in practice)
+
+**Usage Example:**
+```python
+# Read performance metrics
+metrics = uart.read_register(0x21)
+min_cycles = (metrics >> 48) & 0xFFFF
+max_cycles = (metrics >> 32) & 0xFFFF
+avg_cycles = (metrics >> 16) & 0xFFFF
+count = metrics & 0xFFFF
+
+# Convert to nanoseconds @ 100MHz (10ns per cycle)
+min_ns = min_cycles * 10
+max_ns = max_cycles * 10
+avg_ns = avg_cycles * 10
+
+print(f"Performance Statistics ({count} transactions):")
+print(f"  Min latency: {min_ns} ns ({min_cycles} cycles)")
+print(f"  Max latency: {max_ns} ns ({max_cycles} cycles)")
+print(f"  Avg latency: {avg_ns} ns ({avg_cycles} cycles)")
+```
+
+**Reset Behavior:**
+- Metrics reset to initial values on system reset
+- Min resets to max value (0xFFFF)
+- Max resets to zero
+- Average and count reset to zero
+- No software reset mechanism (use hardware reset if needed)
+
+---
+
 ## Future Enhancements (Not Implemented)
 
 ### TIER 2 (Deferred)
@@ -471,7 +689,7 @@ def set_timeout(self, timeout_ms):
 
 ## Conclusion
 
-This enhancement package adds **7 major features** to the UART Register Interface:
+This enhancement package adds **10 major features** to the UART Register Interface:
 
 **TIER 1 (Complete):**
 1. ✅ Control register read-back
@@ -480,14 +698,24 @@ This enhancement package adds **7 major features** to the UART Register Interfac
 4. ✅ Interrupt/alert system with IRQ output
 5. ✅ UART TX/RX FIFO buffers (16-deep)
 
-**TIER 2 (2 of 4 Complete):**
+**TIER 2 (Complete):**
 6. ✅ Timestamp support
-7. ✅ Built-in self-test (BIST) mode
+7. ✅ Built-in self-test (BIST) mode with register payload validation
+8. ✅ GPIO edge detection with interrupts
+9. ✅ Transaction history buffer
+10. ✅ Performance metrics tracking
 
 The system is now production-ready with professional-grade diagnostics, debugging capabilities, and reliability features. All enhancements are backward compatible and ready for integration.
 
+**Key Highlights:**
+- **Debugging:** Transaction history + GPIO edge detection
+- **Validation:** BIST with register payload testing
+- **Performance:** Metrics tracking with min/max/avg latency
+- **Reliability:** Interrupts + diagnostics + error tracking
+- **Monitoring:** Comprehensive event logging with timestamps
+
 ---
 
-**Version:** 2.1.0 (TIER 1 & 2 Enhanced)
+**Version:** 2.2.0 (TIER 1 & 2 Complete)
 **Date:** 2025-11-22
 **Author:** RF Test Automation Engineering (Enhanced by AI Assistant)
