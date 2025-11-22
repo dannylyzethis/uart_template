@@ -61,7 +61,8 @@ entity uart_register_interface is
         i2c0_data_out   : in    std_logic_vector(7 downto 0);
         i2c0_data_valid : in    std_logic;
         i2c0_ack_error  : in    std_logic;
-        
+        i2c0_done       : in    std_logic;
+
         -- I2C interface 1
         i2c1_sda        : inout std_logic;
         i2c1_scl        : inout std_logic;
@@ -71,6 +72,7 @@ entity uart_register_interface is
         i2c1_data_out   : in    std_logic_vector(7 downto 0);
         i2c1_data_valid : in    std_logic;
         i2c1_ack_error  : in    std_logic;
+        i2c1_done       : in    std_logic;
         
         -- SPI interface 0
         spi0_sclk       : out   std_logic;
@@ -403,7 +405,7 @@ begin
             i2c_data_valid  => i2c0_data_valid,
             i2c_busy        => i2c0_busy,
             i2c_ack_error   => i2c0_ack_error,
-            i2c_done        => '0',  -- Not used by boot loader state machine
+            i2c_done        => i2c0_done,  -- Connected to I2C master done signal
 
             -- LUT RAM interfaces
             lut0_addr => lut0_addr,
@@ -1246,27 +1248,38 @@ begin
                                         state <= IDLE;
                                     -- LUT0 write (0x31 = 49): Write calibration data
                                     elsif addr_int = 49 then
-                                        lut0_addr <= data_word(7 downto 0);     -- [7:0] LUT index
-                                        lut0_din  <= data_word(31 downto 0);    -- [31:0] Data to write
-                                        lut0_we   <= '1';  -- Enable write
+                                        -- Bit 63: Address-only mode (0=write data, 1=set address only)
+                                        -- [39:32] LUT index (0-255)
+                                        -- [31:0]  Data to write
+                                        lut0_addr <= data_word(39 downto 32);   -- [39:32] = 8-bit address
+                                        if data_word(63) = '0' then
+                                            lut0_din  <= data_word(31 downto 0);    -- [31:0] = 32-bit data
+                                            lut0_we   <= '1';  -- Enable write
+                                        end if;
                                         state <= IDLE;
                                     -- LUT1 write (0x32 = 50): Write correction data
                                     elsif addr_int = 50 then
-                                        lut1_addr <= data_word(7 downto 0);
-                                        lut1_din  <= data_word(31 downto 0);
-                                        lut1_we   <= '1';
+                                        lut1_addr <= data_word(39 downto 32);
+                                        if data_word(63) = '0' then
+                                            lut1_din  <= data_word(31 downto 0);
+                                            lut1_we   <= '1';
+                                        end if;
                                         state <= IDLE;
                                     -- LUT2 write (0x33 = 51): Write temperature compensation data
                                     elsif addr_int = 51 then
-                                        lut2_addr <= data_word(7 downto 0);
-                                        lut2_din  <= data_word(31 downto 0);
-                                        lut2_we   <= '1';
+                                        lut2_addr <= data_word(39 downto 32);
+                                        if data_word(63) = '0' then
+                                            lut2_din  <= data_word(31 downto 0);
+                                            lut2_we   <= '1';
+                                        end if;
                                         state <= IDLE;
                                     -- LUT3 write (0x34 = 52): Write waveform data
                                     elsif addr_int = 52 then
-                                        lut3_addr <= data_word(7 downto 0);
-                                        lut3_din  <= data_word(31 downto 0);
-                                        lut3_we   <= '1';
+                                        lut3_addr <= data_word(39 downto 32);
+                                        if data_word(63) = '0' then
+                                            lut3_din  <= data_word(31 downto 0);
+                                            lut3_we   <= '1';
+                                        end if;
                                         state <= IDLE;
                                     else
                                         cmd_error_int <= '1';
