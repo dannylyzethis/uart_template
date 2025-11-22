@@ -77,14 +77,21 @@ The UART Register Interface provides a robust, high-speed communication channel 
 ## 3. Protocol Specification
 
 ### 3.1 Command Packet Format
-All commands follow an 11-byte packet structure:
+All commands follow a 12-byte packet structure:
 
 | Byte | Field | Description |
 |------|-------|-------------|
-| 0 | CMD | Command type (0x01=Write, 0x02=Read) |
-| 1 | ADDR | Register address |
-| 2-9 | DATA | 64-bit data (big-endian) |
-| 10 | CRC | CRC-8 checksum of bytes 0-9 |
+| 0 | DEV_ADDR | Device address (0x00-0xFE specific, 0xFF broadcast) |
+| 1 | CMD | Command type (0x01=Write, 0x02=Read) |
+| 2 | ADDR | Register address |
+| 3-10 | DATA | 64-bit data (big-endian) |
+| 11 | CRC | CRC-8 checksum of bytes 0-10 |
+
+**Device Addressing:**
+- Each FPGA can be configured with a unique device address (0x00-0xFE)
+- Address 0xFF is broadcast - all devices respond
+- Devices ignore packets not addressed to them
+- Enables multiple FPGAs on single UART bus (multi-drop)
 
 ### 3.2 Response Packet Format
 Read responses follow a 10-byte structure:
@@ -353,19 +360,34 @@ RegisterInterface.lvlib
 
 ### Appendix A: Command Examples
 
-#### Write Control Register 0
+#### Write Control Register 0 (Device Address 0x00)
 ```
-Command: 0x01 0x00 0x12 0x34 0x56 0x78 0x9A 0xBC 0xDE 0xF0 0x47
-Description: Write 0x123456789ABCDEF0 to control register 0
-CRC: 0x47
+Command: 0x00 0x01 0x00 0x12 0x34 0x56 0x78 0x9A 0xBC 0xDE 0xF0 0xXX
+Breakdown:
+  DEV_ADDR: 0x00 (device 0)
+  CMD:      0x01 (write)
+  ADDR:     0x00 (control register 0)
+  DATA:     0x123456789ABCDEF0 (64-bit big-endian)
+  CRC:      Calculated from all previous bytes
+Description: Write 0x123456789ABCDEF0 to control register 0 on device 0
 ```
 
-#### Read Status Register 0
+#### Read Status Register 0 (Broadcast to All Devices)
 ```
-Command: 0x02 0x10 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x8E
-Response: 0x02 0x01 0x23 0x45 0x67 0x89 0xAB 0xCD 0xEF 0x??
-Description: Read status register 0 (0x10)
-Response breakdown: HDR=0x02, DATA=0x0123456789ABCDEF (64-bit), CRC=calculated
+Command: 0xFF 0x02 0x10 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0xXX
+Breakdown:
+  DEV_ADDR: 0xFF (broadcast - all devices respond)
+  CMD:      0x02 (read)
+  ADDR:     0x10 (status register 0)
+  DATA:     0x0000000000000000 (dummy data)
+  CRC:      Calculated from all previous bytes
+
+Response: 0x02 0x01 0x23 0x45 0x67 0x89 0xAB 0xCD 0xEF 0xXX
+Breakdown:
+  HDR:  0x02 (response header)
+  DATA: 0x0123456789ABCDEF (64-bit status value)
+  CRC:  Calculated from header + data
+Description: Read status register 0 from all devices
 ```
 
 ### Appendix B: SPI Configuration Examples

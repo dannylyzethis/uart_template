@@ -48,7 +48,7 @@ class UARTRegisterInterface:
     via UART with CRC-8 error detection.
     """
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1.0):
+    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1.0, device_address: int = 0):
         """
         Initialize UART interface
 
@@ -56,10 +56,12 @@ class UARTRegisterInterface:
             port: Serial port name (e.g., 'COM3' on Windows, '/dev/ttyUSB0' on Linux)
             baudrate: UART baud rate (default 115200)
             timeout: Read timeout in seconds (default 1.0)
+            device_address: FPGA device address (0-254, or 255 for broadcast)
         """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self.device_address = device_address & 0xFF
         self.serial = None
         self._stats = {
             'commands_sent': 0,
@@ -155,8 +157,9 @@ class UARTRegisterInterface:
         if not self.serial or not self.serial.is_open:
             raise ConnectionError("Serial port not open")
 
-        # Build command packet: [CMD][ADDR][DATA0-7][CRC]
+        # Build command packet: [DEV_ADDR][CMD][ADDR][DATA0-7][CRC]
         packet = bytearray()
+        packet.append(self.device_address)  # Device address first
         packet.append(Command.WRITE)
         packet.append(address)
 
@@ -194,8 +197,9 @@ class UARTRegisterInterface:
         if not self.serial or not self.serial.is_open:
             raise ConnectionError("Serial port not open")
 
-        # Build read command packet
+        # Build read command packet: [DEV_ADDR][CMD][ADDR][DATA0-7][CRC]
         packet = bytearray()
+        packet.append(self.device_address)  # Device address first
         packet.append(Command.READ)
         packet.append(address)
         packet.extend([0] * 8)  # Dummy data

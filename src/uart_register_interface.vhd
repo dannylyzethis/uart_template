@@ -9,7 +9,8 @@ use IEEE.NUMERIC_STD.ALL;
 entity uart_register_interface is
     generic (
         CLK_FREQ        : integer := 100_000_000;  -- System clock frequency
-        BAUD_RATE       : integer := 115200        -- UART baud rate
+        BAUD_RATE       : integer := 115200;       -- UART baud rate
+        DEVICE_ADDRESS  : integer range 0 to 255 := 0  -- Device address (0xFF = broadcast)
     );
     port (
         clk             : in  std_logic;
@@ -123,18 +124,20 @@ architecture behavioral of uart_register_interface is
         return crc_out;
     end function;
     
-    -- Command packet format: [CMD][ADDR][DATA0..DATA7][CRC]
+    -- Command packet format: [DEV_ADDR][CMD][ADDR][DATA0..DATA7][CRC]
+    -- DEV_ADDR: 8-bit device address (0x00-0xFE specific device, 0xFF broadcast)
     -- CMD: 8-bit command (0x01=Write Control, 0x02=Read Status)
     -- ADDR: 8-bit register address (0x00-0x05 for control, 0x10-0x15 for status)
     -- DATA: 64-bit data (big endian)
     -- CRC: 8-bit CRC-8 of all previous bytes
-    
-    type state_type is (IDLE, RX_CMD, RX_ADDR, RX_DATA0, RX_DATA1, 
-                       RX_DATA2, RX_DATA3, RX_DATA4, RX_DATA5, RX_DATA6, RX_DATA7, 
-                       RX_CRC, PROCESS_CMD, 
-                       TX_RESPONSE, TX_DATA0, TX_DATA1, TX_DATA2, TX_DATA3, 
+    -- Total packet size: 12 bytes
+
+    type state_type is (IDLE, RX_DEV_ADDR, RX_CMD, RX_ADDR, RX_DATA0, RX_DATA1,
+                       RX_DATA2, RX_DATA3, RX_DATA4, RX_DATA5, RX_DATA6, RX_DATA7,
+                       RX_CRC, PROCESS_CMD,
+                       TX_RESPONSE, TX_DATA0, TX_DATA1, TX_DATA2, TX_DATA3,
                        TX_DATA4, TX_DATA5, TX_DATA6, TX_DATA7, TX_CRC_OUT);
-    
+
     signal state : state_type := IDLE;
     
     -- UART signals
@@ -148,11 +151,13 @@ architecture behavioral of uart_register_interface is
     signal uart_rx_sync : std_logic_vector(2 downto 0) := "111";
     
     -- Command packet registers
+    signal dev_addr_byte : std_logic_vector(7 downto 0);
     signal cmd_byte   : std_logic_vector(7 downto 0);
     signal addr_byte  : std_logic_vector(7 downto 0);
     signal data_word  : std_logic_vector(63 downto 0);
     signal received_crc : std_logic_vector(7 downto 0);
     signal calc_crc   : std_logic_vector(7 downto 0);
+    signal addr_match : std_logic := '0';  -- Address matched flag
     
     -- Internal control registers
     type ctrl_reg_array_type is array (0 to 5) of std_logic_vector(63 downto 0);
@@ -265,19 +270,37 @@ begin
                     case state is
                         when IDLE =>
                             if rx_valid = '1' then
-                            cmd_byte <= rx_data;
-                            calc_crc <= crc8_update(x"00", rx_data);
-                            state <= RX_ADDR;
-                            crc_error_int <= '0';
-                            cmd_error_int <= '0';
-                        end if;
-                    
-                    when RX_ADDR =>
-                        if rx_valid = '1' then
-                            addr_byte <= rx_data;
-                            calc_crc <= crc8_update(calc_crc, rx_data);
-                            state <= RX_DATA0;
-                        end if;
+                                dev_addr_byte <= rx_data;
+                                calc_crc <= crc8_update(x"00", rx_data);
+                                state <= RX_DEV_ADDR;
+                                crc_error_int <= '0';
+                                cmd_error_int <= '0';
+                                addr_match <= '0';
+                            end if;
+
+                        when RX_DEV_ADDR =>
+                            if rx_valid = '1' then
+                                -- Check if address matches this device or is broadcast
+                                if (to_integer(unsigned(dev_addr_byte)) = DEVICE_ADDRESS) or
+                                   (dev_addr_byte = x"FF") then
+                                    -- Address matches - continue receiving command
+                                    addr_match <= '1';
+                                    cmd_byte <= rx_data;
+                                    calc_crc <= crc8_update(calc_crc, rx_data);
+                                    state <= RX_ADDR;
+                                else
+                                    -- Address doesn't match - ignore packet and return to IDLE
+                                    addr_match <= '0';
+                                    state <= IDLE;
+                                end if;
+                            end if;
+
+                        when RX_ADDR =>
+                            if rx_valid = '1' then
+                                addr_byte <= rx_data;
+                                calc_crc <= crc8_update(calc_crc, rx_data);
+                                state <= RX_DATA0;
+                            end if;
                     
                     when RX_DATA0 =>
                         if rx_valid = '1' then

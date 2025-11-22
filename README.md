@@ -31,6 +31,7 @@ A complete, production-ready UART-based register interface for FPGA control in R
 ### Core Features
 - **64-bit Register Architecture** - Efficient data transfer with 6 control and 6 status registers
 - **CRC-8 Error Detection** - Robust communication with automatic error checking
+- **Device Addressing** - Multi-drop support with unique device addresses (0-254) + broadcast (255)
 - **Register-Based Commands** - No text parsing overhead for maximum performance
 - **Timeout Protection** - Automatic recovery from incomplete UART packets
 - **Clock Domain Crossing** - Proper synchronization for asynchronous UART operation
@@ -42,8 +43,10 @@ A complete, production-ready UART-based register interface for FPGA control in R
 - **Real-time Status Monitoring** - Current, voltage, and performance counters
 
 ### Software Integration
-- **Python Host Library** - Complete API for PC-based control
+- **Python Host Library** - Complete API for PC-based control with device addressing
 - **Example Scripts** - Ready-to-use test and integration examples
+- **Quartus Support** - Full Intel/Altera FPGA constraints and project scripts
+- **Vivado Support** - Xilinx FPGA constraints (XDC files)
 - **LabVIEW Compatible** - Protocol designed for LabVIEW integration
 
 ---
