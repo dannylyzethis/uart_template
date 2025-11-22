@@ -283,6 +283,18 @@ architecture behavioral of uart_register_interface is
     --   [31:0]  Bank 0 edge detected flags (write 1 to clear)
     signal gpio_edge_status   : std_logic_vector(63 downto 0) := (others => '0');
 
+    -- GPIO input synchronizers (2-FF for metastability protection)
+    -- Asynchronous GPIO inputs must be synchronized to system clock domain
+    -- All 4 GPIO input banks are synchronized for reliable reads
+    signal gpio_in0_sync1     : std_logic_vector(63 downto 0) := (others => '0');
+    signal gpio_in0_sync2     : std_logic_vector(63 downto 0) := (others => '0');
+    signal gpio_in1_sync1     : std_logic_vector(63 downto 0) := (others => '0');
+    signal gpio_in1_sync2     : std_logic_vector(63 downto 0) := (others => '0');
+    signal gpio_in2_sync1     : std_logic_vector(63 downto 0) := (others => '0');
+    signal gpio_in2_sync2     : std_logic_vector(63 downto 0) := (others => '0');
+    signal gpio_in3_sync1     : std_logic_vector(63 downto 0) := (others => '0');
+    signal gpio_in3_sync2     : std_logic_vector(63 downto 0) := (others => '0');
+
     -- Previous GPIO state for edge detection
     signal gpio_in0_prev      : std_logic_vector(63 downto 0) := (others => '0');
     signal gpio_in1_prev      : std_logic_vector(63 downto 0) := (others => '0');
@@ -336,6 +348,39 @@ begin
         end if;
     end process;
 
+    -- GPIO Input Synchronizer Process
+    -- Two-stage flip-flop synchronizer to prevent metastability
+    -- Asynchronous GPIO inputs are sampled into system clock domain
+    -- This is CRITICAL for reliable edge detection and prevents metastability
+    -- All 4 GPIO banks (256 pins total) are synchronized
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if rst = '1' then
+                gpio_in0_sync1 <= (others => '0');
+                gpio_in0_sync2 <= (others => '0');
+                gpio_in1_sync1 <= (others => '0');
+                gpio_in1_sync2 <= (others => '0');
+                gpio_in2_sync1 <= (others => '0');
+                gpio_in2_sync2 <= (others => '0');
+                gpio_in3_sync1 <= (others => '0');
+                gpio_in3_sync2 <= (others => '0');
+            else
+                -- First stage: sample asynchronous inputs
+                gpio_in0_sync1 <= gpio_in0;
+                gpio_in1_sync1 <= gpio_in1;
+                gpio_in2_sync1 <= gpio_in2;
+                gpio_in3_sync1 <= gpio_in3;
+
+                -- Second stage: re-sample to eliminate metastability
+                gpio_in0_sync2 <= gpio_in0_sync1;
+                gpio_in1_sync2 <= gpio_in1_sync1;
+                gpio_in2_sync2 <= gpio_in2_sync1;
+                gpio_in3_sync2 <= gpio_in3_sync1;
+            end if;
+        end if;
+    end process;
+
     -- GPIO Edge Detection Process
     -- Monitors configured GPIO pins for rising/falling edges
     -- Generates interrupt (bit 7) when edge is detected
@@ -353,9 +398,9 @@ begin
                 gpio0_edges <= (others => '0');
                 gpio1_edges <= (others => '0');
             else
-                -- Update previous state
-                gpio_in0_prev <= gpio_in0;
-                gpio_in1_prev <= gpio_in1;
+                -- Update previous state (using synchronized inputs)
+                gpio_in0_prev <= gpio_in0_sync2;
+                gpio_in1_prev <= gpio_in1_sync2;
 
                 -- Detect edges on Bank 0 (pins 0-31)
                 for i in 0 to 31 loop
@@ -365,13 +410,13 @@ begin
 
                         -- Detect rising edge (0->1 transition)
                         rising_edge_detected := '0';
-                        if gpio_in0_prev(i) = '0' and gpio_in0(i) = '1' then
+                        if gpio_in0_prev(i) = '0' and gpio_in0_sync2(i) = '1' then
                             rising_edge_detected := '1';
                         end if;
 
                         -- Detect falling edge (1->0 transition)
                         falling_edge_detected := '0';
-                        if gpio_in0_prev(i) = '1' and gpio_in0(i) = '0' then
+                        if gpio_in0_prev(i) = '1' and gpio_in0_sync2(i) = '0' then
                             falling_edge_detected := '1';
                         end if;
 
@@ -410,15 +455,15 @@ begin
                         -- Get edge type configuration for this pin (shared with Bank 0 pin i)
                         edge_type := gpio_edge_config((i*2)+1 downto i*2);
 
-                        -- Detect rising edge
+                        -- Detect rising edge (using synchronized input)
                         rising_edge_detected := '0';
-                        if gpio_in1_prev(i) = '0' and gpio_in1(i) = '1' then
+                        if gpio_in1_prev(i) = '0' and gpio_in1_sync2(i) = '1' then
                             rising_edge_detected := '1';
                         end if;
 
-                        -- Detect falling edge
+                        -- Detect falling edge (using synchronized input)
                         falling_edge_detected := '0';
-                        if gpio_in1_prev(i) = '1' and gpio_in1(i) = '0' then
+                        if gpio_in1_prev(i) = '1' and gpio_in1_sync2(i) = '0' then
                             falling_edge_detected := '1';
                         end if;
 
@@ -1090,13 +1135,13 @@ begin
                                                 when others => response_data <= (others => '0');
                                             end case;
                                             status_read_strobe_int(addr_int - 16) <= '1';
-                                        -- GPIO input registers (0x16-0x19)
+                                        -- GPIO input registers (0x16-0x19) - synchronized values
                                         elsif addr_int >= 22 and addr_int <= 25 then
                                             case addr_int is
-                                                when 22 => response_data <= gpio_in0;
-                                                when 23 => response_data <= gpio_in1;
-                                                when 24 => response_data <= gpio_in2;
-                                                when 25 => response_data <= gpio_in3;
+                                                when 22 => response_data <= gpio_in0_sync2;
+                                                when 23 => response_data <= gpio_in1_sync2;
+                                                when 24 => response_data <= gpio_in2_sync2;
+                                                when 25 => response_data <= gpio_in3_sync2;
                                                 when others => response_data <= (others => '0');
                                             end case;
                                             gpio_read_strobe_int(addr_int - 22) <= '1';
