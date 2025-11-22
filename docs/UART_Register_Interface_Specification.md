@@ -87,13 +87,13 @@ All commands follow an 11-byte packet structure:
 | 10 | CRC | CRC-8 checksum of bytes 0-9 |
 
 ### 3.2 Response Packet Format
-Read responses follow a 6-byte structure:
+Read responses follow a 10-byte structure:
 
 | Byte | Field | Description |
 |------|-------|-------------|
 | 0 | HDR | Response header (0x02) |
-| 1-4 | DATA | 32-bit data (big-endian) |
-| 5 | CRC | CRC-8 checksum of bytes 0-4 |
+| 1-8 | DATA | 64-bit data (big-endian) |
+| 9 | CRC | CRC-8 checksum of bytes 0-8 |
 
 ### 3.3 CRC-8 Calculation
 **Polynomial:** 0x07 (x^8 + x^2 + x + 1)  
@@ -365,7 +365,7 @@ CRC: 0x47
 Command: 0x02 0x10 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x8E
 Response: 0x02 0x01 0x23 0x45 0x67 0x89 0xAB 0xCD 0xEF 0x??
 Description: Read status register 0 (0x10)
-CRC: Calculated based on response data
+Response breakdown: HDR=0x02, DATA=0x0123456789ABCDEF (64-bit), CRC=calculated
 ```
 
 ### Appendix B: SPI Configuration Examples

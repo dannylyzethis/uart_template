@@ -82,7 +82,8 @@ entity uart_register_interface is
         -- Status outputs
         cmd_valid       : out std_logic;
         cmd_error       : out std_logic;
-        crc_error       : out std_logic
+        crc_error       : out std_logic;
+        timeout_error   : out std_logic
     );
 end uart_register_interface;
 
@@ -179,7 +180,12 @@ architecture behavioral of uart_register_interface is
     -- Internal strobe signals for reading outputs
     signal ctrl_write_strobe_int : std_logic_vector(5 downto 0);
     signal status_read_strobe_int : std_logic_vector(5 downto 0);
-    
+
+    -- Timeout and watchdog
+    constant TIMEOUT_CYCLES : integer := 1_000_000;  -- 10ms at 100MHz (safety timeout)
+    signal timeout_counter : integer range 0 to TIMEOUT_CYCLES := 0;
+    signal timeout_error   : std_logic := '0';
+
 begin
     
     -- UART RX synchronizer for clock domain crossing
@@ -229,17 +235,36 @@ begin
                 ctrl_write_strobe_int <= (others => '0');
                 status_read_strobe_int <= (others => '0');
                 ctrl_registers <= (others => (others => '0'));
-                
+                timeout_counter <= 0;
+                timeout_error <= '0';
+
             else
                 -- Clear strobes by default
                 ctrl_write_strobe_int <= (others => '0');
                 status_read_strobe_int <= (others => '0');
                 tx_send <= '0';
                 cmd_valid_int <= '0';
-                
-                case state is
-                    when IDLE =>
-                        if rx_valid = '1' then
+
+                -- Timeout watchdog counter
+                if state = IDLE then
+                    timeout_counter <= 0;
+                    timeout_error <= '0';
+                else
+                    if timeout_counter = TIMEOUT_CYCLES - 1 then
+                        -- Timeout occurred - force return to IDLE
+                        timeout_error <= '1';
+                        state <= IDLE;
+                        timeout_counter <= 0;
+                    else
+                        timeout_counter <= timeout_counter + 1;
+                    end if;
+                end if;
+
+                -- Only process commands if not in timeout
+                if timeout_counter /= TIMEOUT_CYCLES - 1 then
+                    case state is
+                        when IDLE =>
+                            if rx_valid = '1' then
                             cmd_byte <= rx_data;
                             calc_crc <= crc8_update(x"00", rx_data);
                             state <= RX_ADDR;
@@ -440,11 +465,12 @@ begin
                             state <= IDLE;
                         end if;
                     
-                    when others =>
-                        state <= IDLE;
-                end case;
-            end if;
-        end if;
+                        when others =>
+                            state <= IDLE;
+                    end case;
+                end if;  -- timeout check
+            end if;  -- reset check
+        end if;  -- rising_edge
     end process;
     
     -- Output control registers
@@ -509,12 +535,16 @@ begin
                     end if;
                 end if;
                 
-                -- Trigger SPI transactions when ctrl_reg3 is written
-                if ctrl_write_strobe_int(3) = '1' then
+                -- Trigger SPI0 transaction when ctrl_reg4 is written with enable bit set
+                if ctrl_write_strobe_int(4) = '1' then
                     if spi0_config(63) = '1' then  -- SPI0 enable bit
                         spi0_start_int <= '1';
                     end if;
-                    if spi1_config(31) = '1' then  -- SPI1 enable bit
+                end if;
+
+                -- Trigger SPI1 transaction when ctrl_reg5 is written with enable bit set
+                if ctrl_write_strobe_int(5) = '1' then
+                    if spi1_config(63) = '1' then  -- SPI1 enable bit
                         spi1_start_int <= '1';
                     end if;
                 end if;
@@ -526,7 +556,8 @@ begin
     cmd_valid <= cmd_valid_int;
     cmd_error <= cmd_error_int;
     crc_error <= crc_error_int;
-    
+    timeout_error <= timeout_error;
+
 end behavioral;
 
 
@@ -585,14 +616,14 @@ end behavioral;
 --   [63:32] Timestamp (seconds since reset)
 --   [31:24] I2C/SPI busy flags: [7:6]=SPI1/0 busy, [5:4]=I2C1/0 busy
 --   [23:16] I2C/SPI error flags: [7:6]=SPI1/0 errors, [5:4]=I2C1/0 ACK errors
---   [15:8]  Temperature (°C)
+--   [15:8]  Temperature (ï¿½C)
 --   [7:0]   System status bits
 --
 -- Address 0x11: Status Register 1 - Current Measurements
---   [63:48] Current monitor 3 (µA)
---   [47:32] Current monitor 2 (µA)
---   [31:16] Current monitor 1 (µA)
---   [15:0]  Current monitor 0 (µA)
+--   [63:48] Current monitor 3 (ï¿½A)
+--   [47:32] Current monitor 2 (ï¿½A)
+--   [31:16] Current monitor 1 (ï¿½A)
+--   [15:0]  Current monitor 0 (ï¿½A)
 --
 -- Address 0x12: Status Register 2 - Voltage Measurements & I2C Data  
 --   [63:48] Voltage monitor 1 (mV)
