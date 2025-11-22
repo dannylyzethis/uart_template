@@ -261,6 +261,56 @@ architecture behavioral of uart_register_interface is
     --   Bit 5: Payload mismatch detected (sticky until next BIST)
     --   Bits 7-6: Reserved
 
+    -- GPIO Edge Detection System (registers 0x0D, 0x0E, 0x1F)
+    -- Monitors up to 64 GPIO pins (banks 0-1) for rising/falling edges
+    -- Generates interrupt (bit 7) when configured edge is detected
+
+    -- Register 0x0D (13): GPIO Edge Detection Enable
+    --   [63:32] Bank 1 pin enable mask (bits 0-31 for gpio_in1[31:0])
+    --   [31:0]  Bank 0 pin enable mask (bits 0-31 for gpio_in0[31:0])
+    signal gpio_edge_enable   : std_logic_vector(63 downto 0) := (others => '0');
+
+    -- Register 0x0E (14): GPIO Edge Type Configuration
+    --   [63:0] Edge type for pins 0-31 (2 bits per pin)
+    --          Bits [1:0]   = pin 0:  00=disabled, 01=rising, 10=falling, 11=both
+    --          Bits [3:2]   = pin 1
+    --          ...
+    --          Bits [63:62] = pin 31
+    signal gpio_edge_config   : std_logic_vector(63 downto 0) := (others => '0');
+
+    -- Register 0x1F (31): GPIO Edge Status (read/write-1-to-clear)
+    --   [63:32] Bank 1 edge detected flags (write 1 to clear)
+    --   [31:0]  Bank 0 edge detected flags (write 1 to clear)
+    signal gpio_edge_status   : std_logic_vector(63 downto 0) := (others => '0');
+
+    -- Previous GPIO state for edge detection
+    signal gpio_in0_prev      : std_logic_vector(63 downto 0) := (others => '0');
+    signal gpio_in1_prev      : std_logic_vector(63 downto 0) := (others => '0');
+
+    -- Edge detection working signals
+    signal gpio0_edges        : std_logic_vector(31 downto 0) := (others => '0');
+    signal gpio1_edges        : std_logic_vector(31 downto 0) := (others => '0');
+
+    -- Transaction History Buffer (registers 0x0F control, 0x20 data)
+    -- Stores last 16 UART transactions for debugging
+    -- Each entry: [63:32]=timestamp, [31:24]=cmd, [23:16]=addr, [15:8]=flags, [7:0]=index
+    constant HISTORY_DEPTH    : integer := 16;
+    type history_array_type is array (0 to HISTORY_DEPTH-1) of std_logic_vector(63 downto 0);
+    signal history_buffer     : history_array_type := (others => (others => '0'));
+    signal history_wr_ptr     : integer range 0 to HISTORY_DEPTH-1 := 0;
+    signal history_rd_ptr     : integer range 0 to HISTORY_DEPTH-1 := 0;
+    signal history_count      : integer range 0 to HISTORY_DEPTH := 0;
+    signal history_clear      : std_logic := '0';
+
+    -- Performance Metrics (register 0x21 = 33)
+    -- Tracks transaction latency statistics (command received to response sent)
+    signal perf_min_latency   : unsigned(15 downto 0) := (others => '1');  -- Init to max value
+    signal perf_max_latency   : unsigned(15 downto 0) := (others => '0');
+    signal perf_total_latency : unsigned(31 downto 0) := (others => '0');  -- For average calculation
+    signal perf_count         : unsigned(15 downto 0) := (others => '0');
+    signal transaction_start_time : unsigned(15 downto 0) := (others => '0');  -- Capture start timestamp
+    signal measure_latency    : std_logic := '0';  -- Flag to indicate measurement in progress
+
 begin
 
     -- Output assignments
@@ -279,6 +329,243 @@ begin
                 timestamp_counter <= (others => '0');
             else
                 timestamp_counter <= timestamp_counter + 1;
+            end if;
+        end if;
+    end process;
+
+    -- GPIO Edge Detection Process
+    -- Monitors configured GPIO pins for rising/falling edges
+    -- Generates interrupt (bit 7) when edge is detected
+    process(clk)
+        variable edge_type : std_logic_vector(1 downto 0);
+        variable rising_edge_detected : std_logic;
+        variable falling_edge_detected : std_logic;
+        variable any_edge_detected : std_logic;
+    begin
+        if rising_edge(clk) then
+            if rst = '1' then
+                gpio_in0_prev <= (others => '0');
+                gpio_in1_prev <= (others => '0');
+                gpio_edge_status <= (others => '0');
+                gpio0_edges <= (others => '0');
+                gpio1_edges <= (others => '0');
+            else
+                -- Update previous state
+                gpio_in0_prev <= gpio_in0;
+                gpio_in1_prev <= gpio_in1;
+
+                -- Detect edges on Bank 0 (pins 0-31)
+                for i in 0 to 31 loop
+                    if gpio_edge_enable(i) = '1' then
+                        -- Get edge type configuration for this pin (2 bits per pin)
+                        edge_type := gpio_edge_config((i*2)+1 downto i*2);
+
+                        -- Detect rising edge (0->1 transition)
+                        rising_edge_detected := '0';
+                        if gpio_in0_prev(i) = '0' and gpio_in0(i) = '1' then
+                            rising_edge_detected := '1';
+                        end if;
+
+                        -- Detect falling edge (1->0 transition)
+                        falling_edge_detected := '0';
+                        if gpio_in0_prev(i) = '1' and gpio_in0(i) = '0' then
+                            falling_edge_detected := '1';
+                        end if;
+
+                        -- Check if configured edge type matches detected edge
+                        any_edge_detected := '0';
+                        case edge_type is
+                            when "01" =>  -- Rising edge only
+                                if rising_edge_detected = '1' then
+                                    any_edge_detected := '1';
+                                end if;
+                            when "10" =>  -- Falling edge only
+                                if falling_edge_detected = '1' then
+                                    any_edge_detected := '1';
+                                end if;
+                            when "11" =>  -- Both edges
+                                if rising_edge_detected = '1' or falling_edge_detected = '1' then
+                                    any_edge_detected := '1';
+                                end if;
+                            when others =>  -- Disabled
+                                any_edge_detected := '0';
+                        end case;
+
+                        -- Latch edge status (sticky until cleared)
+                        if any_edge_detected = '1' then
+                            gpio_edge_status(i) <= '1';
+                            gpio0_edges(i) <= '1';
+                        end if;
+                    end if;
+                end loop;
+
+                -- Detect edges on Bank 1 (pins 32-63, mapped to gpio_in1[0-31])
+                for i in 0 to 31 loop
+                    if gpio_edge_enable(32 + i) = '1' then
+                        -- Get edge type configuration for this pin
+                        edge_type := gpio_edge_config((i*2)+1 downto i*2);
+
+                        -- Detect rising edge
+                        rising_edge_detected := '0';
+                        if gpio_in1_prev(i) = '0' and gpio_in1(i) = '1' then
+                            rising_edge_detected := '1';
+                        end if;
+
+                        -- Detect falling edge
+                        falling_edge_detected := '0';
+                        if gpio_in1_prev(i) = '1' and gpio_in1(i) = '0' then
+                            falling_edge_detected := '1';
+                        end if;
+
+                        -- Check if configured edge type matches detected edge
+                        any_edge_detected := '0';
+                        case edge_type is
+                            when "01" =>  -- Rising edge only
+                                if rising_edge_detected = '1' then
+                                    any_edge_detected := '1';
+                                end if;
+                            when "10" =>  -- Falling edge only
+                                if falling_edge_detected = '1' then
+                                    any_edge_detected := '1';
+                                end if;
+                            when "11" =>  -- Both edges
+                                if rising_edge_detected = '1' or falling_edge_detected = '1' then
+                                    any_edge_detected := '1';
+                                end if;
+                            when others =>  -- Disabled
+                                any_edge_detected := '0';
+                        end case;
+
+                        -- Latch edge status
+                        if any_edge_detected = '1' then
+                            gpio_edge_status(32 + i) <= '1';
+                            gpio1_edges(i) <= '1';
+                        end if;
+                    end if;
+                end loop;
+
+                -- Generate GPIO interrupt (bit 7) if any edge is detected
+                if (gpio0_edges /= x"00000000") or (gpio1_edges /= x"00000000") then
+                    irq_status_bits(7) <= '1';
+                end if;
+
+                -- Clear edge flags after they've been latched into status
+                gpio0_edges <= (others => '0');
+                gpio1_edges <= (others => '0');
+            end if;
+        end if;
+    end process;
+
+    -- Performance Metrics Process
+    -- Tracks transaction latency (command receive to response send)
+    process(clk)
+        variable current_latency : unsigned(15 downto 0);
+        variable avg_latency : unsigned(15 downto 0);
+    begin
+        if rising_edge(clk) then
+            if rst = '1' then
+                perf_min_latency <= (others => '1');  -- Max value
+                perf_max_latency <= (others => '0');
+                perf_total_latency <= (others => '0');
+                perf_count <= (others => '0');
+                transaction_start_time <= (others => '0');
+                measure_latency <= '0';
+            else
+                -- Start latency measurement when command is valid
+                if cmd_valid_int = '1' and measure_latency = '0' then
+                    transaction_start_time <= timestamp_counter(15 downto 0);  -- Capture lower 16 bits
+                    measure_latency <= '1';
+                end if;
+
+                -- Complete latency measurement when entering TX_RESPONSE state
+                if state = TX_RESPONSE and measure_latency = '1' then
+                    -- Calculate latency (handle wraparound)
+                    current_latency := timestamp_counter(15 downto 0) - transaction_start_time;
+
+                    -- Update min latency
+                    if current_latency < perf_min_latency then
+                        perf_min_latency <= current_latency;
+                    end if;
+
+                    -- Update max latency
+                    if current_latency > perf_max_latency then
+                        perf_max_latency <= current_latency;
+                    end if;
+
+                    -- Update total for average calculation (with saturation)
+                    if perf_total_latency < x"FFFF0000" then  -- Prevent overflow
+                        perf_total_latency <= perf_total_latency + current_latency;
+                    end if;
+
+                    -- Increment count (with saturation)
+                    if perf_count < x"FFFF" then
+                        perf_count <= perf_count + 1;
+                    end if;
+
+                    measure_latency <= '0';
+                end if;
+
+                -- Clear measurement flag if transaction fails
+                if state = IDLE and measure_latency = '1' then
+                    measure_latency <= '0';
+                end if;
+            end if;
+        end if;
+    end process;
+
+    -- Transaction History Buffer Process
+    -- Logs UART transactions with timestamp for debugging
+    process(clk)
+        variable transaction_flags : std_logic_vector(7 downto 0);
+    begin
+        if rising_edge(clk) then
+            if rst = '1' or history_clear = '1' then
+                history_wr_ptr <= 0;
+                history_rd_ptr <= 0;
+                history_count <= 0;
+                history_clear <= '0';
+                -- Don't need to clear buffer contents, just pointers
+            else
+                -- Capture transaction when command is valid
+                if cmd_valid_int = '1' then
+                    -- Build transaction flags
+                    transaction_flags := (
+                        7 => crc_error_int,
+                        6 => timeout_error_int,
+                        5 => cmd_error_int,
+                        4 => '0',  -- Reserved
+                        3 => '0',  -- Reserved
+                        2 downto 0 => "000"  -- Reserved
+                    );
+
+                    -- Store transaction record
+                    history_buffer(history_wr_ptr) <=
+                        std_logic_vector(timestamp_counter(31 downto 0)) &  -- [63:32] Lower 32 bits of timestamp
+                        cmd_byte &                                           -- [31:24] Command
+                        addr_byte &                                          -- [23:16] Address
+                        transaction_flags &                                  -- [15:8]  Status flags
+                        std_logic_vector(to_unsigned(history_wr_ptr, 8));   -- [7:0]   Entry index
+
+                    -- Increment write pointer (circular)
+                    if history_wr_ptr = HISTORY_DEPTH-1 then
+                        history_wr_ptr <= 0;
+                    else
+                        history_wr_ptr <= history_wr_ptr + 1;
+                    end if;
+
+                    -- Update count (saturate at HISTORY_DEPTH)
+                    if history_count < HISTORY_DEPTH then
+                        history_count <= history_count + 1;
+                    else
+                        -- Buffer full, oldest entry is being overwritten
+                        -- Move read pointer to track oldest entry
+                        if history_rd_ptr = HISTORY_DEPTH-1 then
+                            history_rd_ptr <= 0;
+                        else
+                            history_rd_ptr <= history_rd_ptr + 1;
+                        end if;
+                    end if;
+                end if;
             end if;
         end if;
     end process;
@@ -694,8 +981,10 @@ begin
                             
                             case cmd_byte is
                                 when x"01" => -- Write Control Register
-                                    if addr_int >= 0 and addr_int <= 12 then  -- 0x00-0x0C (includes GPIO + watchdog + IRQ + BIST)
-                                        ctrl_registers(addr_int) <= data_word;
+                                    if addr_int >= 0 and addr_int <= 15 then  -- 0x00-0x0F (includes GPIO + watchdog + IRQ + BIST + GPIO edge + history)
+                                        if addr_int <= 12 then
+                                            ctrl_registers(addr_int) <= data_word;
+                                        end if;
                                         -- Strobe system/I2C/SPI registers (0-5)
                                         if addr_int <= 5 then
                                             ctrl_write_strobe_int(addr_int) <= '1';
@@ -709,12 +998,28 @@ begin
                                         -- Register 12 (0x0C) is BIST control
                                         elsif addr_int = 12 then
                                             bist_control <= data_word(7 downto 0);
+                                        -- Register 13 (0x0D) is GPIO edge detection enable
+                                        elsif addr_int = 13 then
+                                            gpio_edge_enable <= data_word;
+                                        -- Register 14 (0x0E) is GPIO edge type configuration
+                                        elsif addr_int = 14 then
+                                            gpio_edge_config <= data_word;
+                                        -- Register 15 (0x0F) is transaction history control
+                                        elsif addr_int = 15 then
+                                            if data_word(0) = '1' then
+                                                history_clear <= '1';  -- Clear history buffer
+                                            end if;
                                         end if;
                                         state <= IDLE;
                                     -- Write to IRQ status register 0x1B (27) to clear interrupts (write-1-to-clear)
                                     elsif addr_int = 27 then
                                         -- Clear bits that are written as '1'
                                         irq_status_bits <= irq_status_bits and not data_word(7 downto 0);
+                                        state <= IDLE;
+                                    -- Write to GPIO edge status register 0x1F (31) to clear edge flags (write-1-to-clear)
+                                    elsif addr_int = 31 then
+                                        -- Clear bits that are written as '1'
+                                        gpio_edge_status <= gpio_edge_status and not data_word;
                                         state <= IDLE;
                                     else
                                         cmd_error_int <= '1';
@@ -725,16 +1030,22 @@ begin
                                     end if;
 
                                 when x"02" => -- Read Register (Control or Status)
-                                    -- Extended to support control register read-back (0x00-0x0C) and diagnostics (0x1A-0x1E)
-                                    if (addr_int >= 0 and addr_int <= 12) or (addr_int >= 16 and addr_int <= 30) then
+                                    -- Extended to support control register read-back (0x00-0x0F) and diagnostics (0x1A-0x21)
+                                    if (addr_int >= 0 and addr_int <= 15) or (addr_int >= 16 and addr_int <= 33) then
                                         -- Control register read-back (0x00-0x0C including watchdog, IRQ, BIST)
                                         if addr_int >= 0 and addr_int <= 12 then
                                             response_data <= ctrl_registers(addr_int);
-                                            -- Optional: Generate read strobe for control registers
-                                            if addr_int <= 5 then
-                                                -- Main control registers
-                                                -- (No strobe needed for read-back, but could add if desired)
-                                            end if;
+                                        -- GPIO edge detection control registers (0x0D-0x0E)
+                                        elsif addr_int = 13 then
+                                            response_data <= gpio_edge_enable;
+                                        elsif addr_int = 14 then
+                                            response_data <= gpio_edge_config;
+                                        -- Transaction history control register (0x0F)
+                                        elsif addr_int = 15 then
+                                            -- Return entry count
+                                            response_data <= (63 downto 16 => '0') &
+                                                            std_logic_vector(to_unsigned(history_count, 8)) &  -- [15:8] Entry count
+                                                            (7 downto 0 => '0');  -- [7:0] Reserved
                                         -- System/I2C/SPI status registers (0x10-0x15)
                                         elsif addr_int >= 16 and addr_int <= 21 then
                                             case addr_int is
@@ -784,6 +1095,39 @@ begin
                                                             bist_failed_addr &              -- [23:16] Last failed register address
                                                             std_logic_vector(bist_error_count) &  -- [15:8] Mismatch count
                                                             bist_status;                    -- [7:0] BIST status (duplicate for convenience)
+                                        -- GPIO edge status register (0x1F = 31)
+                                        elsif addr_int = 31 then
+                                            -- Return GPIO edge detection status (write-1-to-clear)
+                                            response_data <= gpio_edge_status;  -- [63:32] Bank1, [31:0] Bank0
+                                        -- Transaction history data register (0x20 = 32)
+                                        elsif addr_int = 32 then
+                                            -- Return oldest transaction entry and auto-increment read pointer
+                                            if history_count > 0 then
+                                                response_data <= history_buffer(history_rd_ptr);
+                                                -- Auto-increment read pointer for next read
+                                                if history_rd_ptr = HISTORY_DEPTH-1 then
+                                                    history_rd_ptr <= 0;
+                                                else
+                                                    history_rd_ptr <= history_rd_ptr + 1;
+                                                end if;
+                                                -- Decrement count
+                                                history_count <= history_count - 1;
+                                            else
+                                                -- No history available
+                                                response_data <= (others => '0');
+                                            end if;
+                                        -- Performance metrics register (0x21 = 33)
+                                        elsif addr_int = 33 then
+                                            -- Calculate and return performance statistics
+                                            -- [63:48] Min latency, [47:32] Max latency, [31:16] Avg latency, [15:0] Count
+                                            if perf_count > 0 then
+                                                response_data <= std_logic_vector(perf_min_latency) &                                  -- [63:48] Min
+                                                                std_logic_vector(perf_max_latency) &                                   -- [47:32] Max
+                                                                std_logic_vector(perf_total_latency(31 downto 16) / perf_count) &      -- [31:16] Avg (simple division)
+                                                                std_logic_vector(perf_count);                                          -- [15:0]  Count
+                                            else
+                                                response_data <= (others => '0');
+                                            end if;
                                         end if;
                                         -- Start CRC calculation for response
                                         tx_crc_calc <= crc8_update(x"00", x"02"); -- Response header
