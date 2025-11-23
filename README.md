@@ -43,6 +43,7 @@ A complete, production-ready UART-based register interface for FPGA control in R
 
 ### Software Integration
 - **Python Host Library** - Complete API for PC-based control
+- **IO Line Event System** - Real-time event monitoring and custom callbacks
 - **Example Scripts** - Ready-to-use test and integration examples
 - **LabVIEW Compatible** - Protocol designed for LabVIEW integration
 
@@ -138,6 +139,7 @@ python3 python/examples/basic_test.py --port /dev/ttyUSB0
 ## 📚 Documentation
 
 - **[Complete Specification](docs/UART_Register_Interface_Specification.md)** - Detailed protocol and register documentation
+- **[IO Line Events Guide](docs/IO_LINE_EVENTS_GUIDE.md)** - Real-time event monitoring and custom callbacks
 - **[Python API Reference](python/uart_register_interface.py)** - Host library documentation
 - **[Examples](python/examples/)** - Usage examples and test scripts
 
@@ -258,6 +260,28 @@ with UARTRegisterInterface(port='/dev/ttyUSB0') as uart:
     # Read received data
     voltages = uart.read_voltages()
     i2c_rx = voltages['i2c0_rx']
+```
+
+### Python - IO Line Events
+```python
+from uart_register_interface import UARTRegisterInterface, IOLineEvent
+
+# Enable real-time event monitoring
+with UARTRegisterInterface(port='/dev/ttyUSB0', enable_events=True) as uart:
+    # Register event handler
+    def on_i2c_data(event):
+        print(f"I2C data received: 0x{event.value:04X}")
+
+    uart.register_event_handler(IOLineEvent.I2C0_DATA_RECEIVED, on_i2c_data)
+
+    # Register custom condition
+    uart.register_custom_condition(
+        "high_current",
+        lambda data: data.get('mon0', 0) > 1000,
+        IOLineEvent.CUSTOM_THRESHOLD
+    )
+
+    # Events are automatically detected and callbacks invoked
 ```
 
 ---
@@ -421,6 +445,7 @@ SOFTWARE.
 | SPI Master | ✅ Complete |
 | Timeout/Error Recovery | ✅ Complete |
 | Python Library | ✅ Complete |
+| IO Line Event System | ✅ Complete |
 | Documentation | ✅ Complete |
 | Testbenches | ✅ Complete |
 | LabVIEW Integration | 🚧 In Progress |
