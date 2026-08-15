@@ -25,7 +25,8 @@ end uart_core;
 
 architecture behavioral of uart_core is
     
-    constant CLKS_PER_BIT : integer := CLK_FREQ / BAUD_RATE;
+    -- Round to the nearest integer divisor to minimize baud-rate error.
+    constant CLKS_PER_BIT : integer := (CLK_FREQ + (BAUD_RATE / 2)) / BAUD_RATE;
     
     -- RX State Machine
     type rx_state_type is (RX_IDLE, RX_START, RX_DATA_BITS, RX_STOP);
@@ -107,7 +108,12 @@ begin
                     
                     when RX_STOP =>
                         if rx_clk_count = CLKS_PER_BIT-1 then
-                            rx_valid_flag <= '1';  -- Data is valid
+                            -- Accept the byte only when the stop bit is high.
+                            -- A low stop bit is a framing error and the byte is
+                            -- discarded rather than passed into the protocol.
+                            if rx = '1' then
+                                rx_valid_flag <= '1';
+                            end if;
                             rx_clk_count <= 0;
                             rx_state <= RX_IDLE;
                         else

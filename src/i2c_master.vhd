@@ -211,7 +211,7 @@ begin
                                     phase := 2;
                                 when 2 =>
                                     -- Sample ACK (should be '0' for ACK)
-                                    if sda = '1' then
+                                    if sda /= '0' then
                                         ack_error_int <= '1';  -- NACK received
                                     end if;
                                     scl_out <= '1';
@@ -278,7 +278,7 @@ begin
                                     scl_out <= '1';
                                     phase := 2;
                                 when 2 =>
-                                    if sda = '1' then
+                                    if sda /= '0' then
                                         ack_error_int <= '1';  -- NACK received
                                     end if;
                                     scl_out <= '1';

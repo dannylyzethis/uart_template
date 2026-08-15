@@ -25,6 +25,7 @@ vcom -2002 -work work ../src/uart_register_interface.vhd
 echo "Compiling testbenches..."
 vcom -2002 -work work ../testbench/uart_register_tb.vhd
 vcom -2002 -work work ../testbench/uart_system_tb.vhd
+vcom -2002 -work work ../testbench/spi_master_tb.vhd
 
 echo "Compilation complete!"
 echo ""

@@ -188,6 +188,7 @@ architecture behavioral of uart_system_tb is
     signal spi0_data_out   : std_logic_vector(31 downto 0);
     signal spi0_data_valid : std_logic;
     signal spi0_done       : std_logic;
+    signal spi0_done_seen  : std_logic := '0';
 
     signal spi1_sclk       : std_logic;
     signal spi1_mosi       : std_logic;
@@ -208,6 +209,7 @@ architecture behavioral of uart_system_tb is
 
     -- Test control
     signal test_running    : boolean := true;
+    signal test_completed  : boolean := false;
     signal test_phase      : string(1 to 32) := "INIT                            ";
     signal test_pass_count : integer := 0;
     signal test_fail_count : integer := 0;
@@ -216,14 +218,15 @@ architecture behavioral of uart_system_tb is
     function crc8_update(crc_in: std_logic_vector(7 downto 0);
                         data_in: std_logic_vector(7 downto 0))
                         return std_logic_vector is
-        variable crc_out : std_logic_vector(7 downto 0);
-        variable temp    : std_logic_vector(7 downto 0);
+        variable crc_out : std_logic_vector(7 downto 0) := crc_in;
     begin
-        temp := crc_in xor data_in;
-        crc_out := temp(6 downto 0) & '0';
-        if temp(7) = '1' then
-            crc_out := crc_out xor x"07";
-        end if;
+        for bit_index in 7 downto 0 loop
+            if (crc_out(7) xor data_in(bit_index)) = '1' then
+                crc_out := (crc_out(6 downto 0) & '0') xor x"07";
+            else
+                crc_out := crc_out(6 downto 0) & '0';
+            end if;
+        end loop;
         return crc_out;
     end function;
 
@@ -245,12 +248,67 @@ architecture behavioral of uart_system_tb is
         wait for BIT_PERIOD;
     end procedure;
 
+    procedure uart_receive_byte(
+        signal uart_tx_sig : in std_logic;
+        variable data_byte : out std_logic_vector(7 downto 0)
+    ) is
+    begin
+        wait until falling_edge(uart_tx_sig);
+        wait for BIT_PERIOD + BIT_PERIOD / 2;
+        for i in 0 to 7 loop
+            data_byte(i) := uart_tx_sig;
+            wait for BIT_PERIOD;
+        end loop;
+        assert uart_tx_sig = '1'
+            report "FAIL: UART TX framing error" severity error;
+    end procedure;
+
+    procedure uart_send_response_byte(
+        signal uart_tx_sig : out std_logic;
+        constant data_byte : in std_logic_vector(7 downto 0)
+    ) is
+    begin
+        uart_tx_sig <= '0';
+        wait for BIT_PERIOD;
+        for i in 0 to 7 loop
+            uart_tx_sig <= data_byte(i);
+            wait for BIT_PERIOD;
+        end loop;
+        uart_tx_sig <= '1';
+        wait for BIT_PERIOD / 4;
+    end procedure;
+
+    procedure receive_uart_response(
+        signal uart_tx_sig : in std_logic;
+        constant expected_data : in std_logic_vector(63 downto 0)
+    ) is
+        variable received_byte : std_logic_vector(7 downto 0);
+        variable response_crc  : std_logic_vector(7 downto 0) := x"00";
+    begin
+        uart_receive_byte(uart_tx_sig, received_byte);
+        assert received_byte = x"02"
+            report "FAIL: UART response header mismatch" severity error;
+        response_crc := crc8_update(response_crc, received_byte);
+
+        for byte_index in 0 to 7 loop
+            uart_receive_byte(uart_tx_sig, received_byte);
+            assert received_byte = expected_data(63 - byte_index * 8 downto 56 - byte_index * 8)
+                report "FAIL: UART response data mismatch" severity error;
+            response_crc := crc8_update(response_crc, received_byte);
+        end loop;
+
+        uart_receive_byte(uart_tx_sig, received_byte);
+        assert received_byte = response_crc
+            report "FAIL: UART response CRC mismatch" severity error;
+    end procedure;
+
     -- Send complete UART command packet
     procedure send_uart_command(
         signal uart_tx_sig : out std_logic;
         constant cmd       : in std_logic_vector(7 downto 0);
         constant addr      : in std_logic_vector(7 downto 0);
-        constant data      : in std_logic_vector(63 downto 0)
+        constant data      : in std_logic_vector(63 downto 0);
+        constant expect_response : in boolean := false
     ) is
         variable crc : std_logic_vector(7 downto 0) := x"00";
     begin
@@ -275,9 +333,12 @@ architecture behavioral of uart_system_tb is
         uart_send_byte(uart_tx_sig, data(23 downto 16));
         uart_send_byte(uart_tx_sig, data(15 downto 8));
         uart_send_byte(uart_tx_sig, data(7 downto 0));
-        uart_send_byte(uart_tx_sig, crc);
+        if expect_response then
+            uart_send_response_byte(uart_tx_sig, crc);
+        else
+            uart_send_byte(uart_tx_sig, crc);
+        end if;
 
-        wait for 10 * BIT_PERIOD;
     end procedure;
 
 begin
@@ -445,6 +506,11 @@ begin
     process(clk)
     begin
         if rising_edge(clk) then
+            if rst = '1' then
+                spi0_done_seen <= '0';
+            elsif spi0_done = '1' then
+                spi0_done_seen <= '1';
+            end if;
             if spi0_data_valid = '1' then
                 status_reg3(63 downto 32) <= spi0_data_out;
             end if;
@@ -506,8 +572,16 @@ begin
         report "Test 2: Reading all status registers" severity note;
 
         for i in 0 to 5 loop
-            send_uart_command(uart_rx, x"02", std_logic_vector(to_unsigned(16+i, 8)), x"0000000000000000");
-            wait for 15 us;
+            send_uart_command(uart_rx, x"02", std_logic_vector(to_unsigned(16+i, 8)), x"0000000000000000", true);
+            case i is
+                when 0 => receive_uart_response(uart_tx, status_reg0);
+                when 1 => receive_uart_response(uart_tx, status_reg1);
+                when 2 => receive_uart_response(uart_tx, status_reg2);
+                when 3 => receive_uart_response(uart_tx, status_reg3);
+                when 4 => receive_uart_response(uart_tx, status_reg4);
+                when 5 => receive_uart_response(uart_tx, status_reg5);
+                when others => null;
+            end case;
         end loop;
         test_pass_count <= test_pass_count + 1;
 
@@ -517,11 +591,11 @@ begin
 
         -- Write to I2C0: addr=0x50, data=0xAA
         send_uart_command(uart_rx, x"01", x"02", x"8A00000000000AA0");
-        wait for 5 us;
-        wait until i2c0_done = '1' or i2c0_ack_error = '1';
-        wait for 2 us;
-        assert i2c0_ack_error = '0'
-            report "FAIL: I2C0 ACK error" severity warning;
+        wait until i2c0_done = '1' for 1 ms;
+        assert i2c0_done = '1'
+            report "FAIL: I2C0 transaction timed out" severity error;
+        assert i2c0_ack_error = '1'
+            report "FAIL: Floating I2C bus was incorrectly accepted as ACK" severity error;
         test_pass_count <= test_pass_count + 1;
 
         -- Test 4: SPI transaction with configuration
@@ -534,8 +608,11 @@ begin
 
         -- Send SPI data
         send_uart_command(uart_rx, x"01", x"03", x"DEADBEEF00000000");
-        wait for 5 us;
-        wait until spi0_done = '1';
+        if spi0_done_seen = '0' then
+            wait until spi0_done_seen = '1' for 1 ms;
+        end if;
+        assert spi0_done_seen = '1'
+            report "FAIL: SPI0 transaction timed out" severity error;
         wait for 2 us;
         test_pass_count <= test_pass_count + 1;
 
@@ -576,6 +653,7 @@ begin
 
         -- Final summary
         test_phase <= "COMPLETED                       ";
+        test_completed <= true;
         report "========================================" severity note;
         report "  Test Summary:" severity note;
         report "  Passed: " & integer'image(test_pass_count) severity note;
@@ -589,20 +667,26 @@ begin
 
     -- Monitor process
     monitor_process: process(clk)
+        variable cmd_error_prev     : std_logic := '0';
+        variable crc_error_prev     : std_logic := '0';
+        variable timeout_error_prev : std_logic := '0';
     begin
         if rising_edge(clk) then
             if cmd_valid = '1' then
                 report "Command validated" severity note;
             end if;
-            if cmd_error = '1' then
+            if cmd_error = '1' and cmd_error_prev = '0' then
                 report "Command error detected" severity warning;
             end if;
-            if crc_error = '1' then
+            if crc_error = '1' and crc_error_prev = '0' then
                 report "CRC error detected" severity warning;
             end if;
-            if timeout_error = '1' then
+            if timeout_error = '1' and timeout_error_prev = '0' then
                 report "Timeout error detected" severity warning;
             end if;
+            cmd_error_prev := cmd_error;
+            crc_error_prev := crc_error;
+            timeout_error_prev := timeout_error;
         end if;
     end process;
 

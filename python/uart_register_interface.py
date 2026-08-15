@@ -61,6 +61,10 @@ class UARTRegisterInterface:
         self.baudrate = baudrate
         self.timeout = timeout
         self.serial = None
+        # Control registers are write-only in the FPGA protocol. Keep a host
+        # shadow of the shared SPI TX register so updating one channel does not
+        # require an unsupported read of control address 0x03.
+        self._spi_tx_data = 0
         self._stats = {
             'commands_sent': 0,
             'responses_received': 0,
@@ -112,10 +116,11 @@ class UARTRegisterInterface:
         Returns:
             Updated CRC value
         """
-        temp = crc ^ data
-        crc = (temp << 1) & 0xFF
-        if temp & 0x80:
-            crc ^= 0x07
+        for bit_index in range(7, -1, -1):
+            feedback = ((crc >> 7) & 1) ^ ((data >> bit_index) & 1)
+            crc = (crc << 1) & 0xFF
+            if feedback:
+                crc ^= 0x07
         return crc
 
     @staticmethod
@@ -309,14 +314,14 @@ class UARTRegisterInterface:
             channel: SPI channel (0 or 1)
             data: 32-bit data to transmit
         """
-        current = self.read_register(RegisterAddress.CTRL_SPI_DATA) or 0
-
         if channel == 0:
-            value = ((data & 0xFFFFFFFF) << 32) | (current & 0xFFFFFFFF)
+            self._spi_tx_data = ((data & 0xFFFFFFFF) << 32) | \
+                                (self._spi_tx_data & 0xFFFFFFFF)
         else:
-            value = (current & 0xFFFFFFFF00000000) | (data & 0xFFFFFFFF)
+            self._spi_tx_data = (self._spi_tx_data & 0xFFFFFFFF00000000) | \
+                                (data & 0xFFFFFFFF)
 
-        self.write_register(RegisterAddress.CTRL_SPI_DATA, value)
+        self.write_register(RegisterAddress.CTRL_SPI_DATA, self._spi_tx_data)
 
     # ============ High-Level Status Methods ============
 

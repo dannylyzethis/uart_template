@@ -172,20 +172,25 @@ architecture behavioral of uart_register_tb is
     
     -- Test control
     signal test_running    : boolean := true;
+    signal test_completed  : boolean := false;
     signal test_phase      : string(1 to 16) := "INIT            ";
+    signal ctrl_write_seen : std_logic_vector(5 downto 0) := (others => '0');
+    signal status_read_seen: std_logic_vector(5 downto 0) := (others => '0');
+    signal i2c_start_seen  : std_logic_vector(1 downto 0) := (others => '0');
     
     -- CRC calculation function (same as in DUT)
     function crc8_update(crc_in: std_logic_vector(7 downto 0); 
                         data_in: std_logic_vector(7 downto 0)) 
                         return std_logic_vector is
-        variable crc_out : std_logic_vector(7 downto 0);
-        variable temp    : std_logic_vector(7 downto 0);
+        variable crc_out : std_logic_vector(7 downto 0) := crc_in;
     begin
-        temp := crc_in xor data_in;
-        crc_out := temp(6 downto 0) & '0';
-        if temp(7) = '1' then
-            crc_out := crc_out xor x"07";
-        end if;
+        for bit_index in 7 downto 0 loop
+            if (crc_out(7) xor data_in(bit_index)) = '1' then
+                crc_out := (crc_out(6 downto 0) & '0') xor x"07";
+            else
+                crc_out := crc_out(6 downto 0) & '0';
+            end if;
+        end loop;
         return crc_out;
     end function;
     
@@ -209,13 +214,87 @@ architecture behavioral of uart_register_tb is
         uart_tx_sig <= '1';
         wait for BIT_PERIOD;
     end procedure;
+
+    procedure uart_receive_byte(
+        signal uart_tx_sig : in std_logic;
+        variable data_byte : out std_logic_vector(7 downto 0)
+    ) is
+    begin
+        wait until falling_edge(uart_tx_sig);
+        wait for BIT_PERIOD + BIT_PERIOD / 2;
+        for i in 0 to 7 loop
+            data_byte(i) := uart_tx_sig;
+            wait for BIT_PERIOD;
+        end loop;
+        assert uart_tx_sig = '1'
+            report "ERROR: UART TX framing error" severity error;
+    end procedure;
+
+    procedure receive_uart_response(
+        signal uart_tx_sig : in std_logic;
+        constant expected_data : in std_logic_vector(63 downto 0)
+    ) is
+        variable received_byte : std_logic_vector(7 downto 0);
+        variable response_crc  : std_logic_vector(7 downto 0) := x"00";
+    begin
+        uart_receive_byte(uart_tx_sig, received_byte);
+        assert received_byte = x"02"
+            report "ERROR: UART response header mismatch" severity error;
+        response_crc := crc8_update(response_crc, received_byte);
+
+        for byte_index in 0 to 7 loop
+            uart_receive_byte(uart_tx_sig, received_byte);
+            assert received_byte = expected_data(63 - byte_index * 8 downto 56 - byte_index * 8)
+                report "ERROR: UART response data mismatch" severity error;
+            response_crc := crc8_update(response_crc, received_byte);
+        end loop;
+
+        uart_receive_byte(uart_tx_sig, received_byte);
+        assert received_byte = response_crc
+            report "ERROR: UART response CRC mismatch" severity error;
+    end procedure;
+
+    procedure uart_send_bad_stop_byte(
+        signal uart_tx_sig : out std_logic;
+        constant data_byte : in std_logic_vector(7 downto 0)
+    ) is
+    begin
+        uart_tx_sig <= '0';
+        wait for BIT_PERIOD;
+        for i in 0 to 7 loop
+            uart_tx_sig <= data_byte(i);
+            wait for BIT_PERIOD;
+        end loop;
+        uart_tx_sig <= '0';  -- Deliberately invalid stop bit
+        wait for BIT_PERIOD;
+        uart_tx_sig <= '1';
+        wait for 2 * BIT_PERIOD;
+    end procedure;
+
+    procedure uart_send_response_byte(
+        signal uart_tx_sig : out std_logic;
+        constant data_byte : in std_logic_vector(7 downto 0)
+    ) is
+    begin
+        uart_tx_sig <= '0';
+        wait for BIT_PERIOD;
+        for i in 0 to 7 loop
+            uart_tx_sig <= data_byte(i);
+            wait for BIT_PERIOD;
+        end loop;
+        uart_tx_sig <= '1';
+        -- Return before the receiver samples the stop-bit midpoint so the
+        -- response monitor is waiting before the FPGA asserts TX start.
+        wait for BIT_PERIOD / 4;
+    end procedure;
     
     -- Send complete UART command packet
     procedure send_uart_command(
         signal uart_tx_sig : out std_logic;
         constant cmd       : in std_logic_vector(7 downto 0);
         constant addr      : in std_logic_vector(7 downto 0);
-        constant data      : in std_logic_vector(63 downto 0)
+        constant data      : in std_logic_vector(63 downto 0);
+        constant expect_response : in boolean := false
     ) is
         variable crc : std_logic_vector(7 downto 0) := x"00";
     begin
@@ -242,9 +321,12 @@ architecture behavioral of uart_register_tb is
         uart_send_byte(uart_tx_sig, data(23 downto 16));
         uart_send_byte(uart_tx_sig, data(15 downto 8));
         uart_send_byte(uart_tx_sig, data(7 downto 0));
-        uart_send_byte(uart_tx_sig, crc);
+        if expect_response then
+            uart_send_response_byte(uart_tx_sig, crc);
+        else
+            uart_send_byte(uart_tx_sig, crc);
+        end if;
         
-        wait for 10 * BIT_PERIOD; -- Allow processing time
     end procedure;
 
 begin
@@ -345,7 +427,7 @@ begin
         wait for 1 us;
         assert ctrl_reg0 = x"123456789ABCDEF0" 
             report "ERROR: Control Register 0 write failed" severity error;
-        assert ctrl_write_strobe(0) = '1' 
+        assert ctrl_write_seen(0) = '1'
             report "ERROR: Control Register 0 write strobe not asserted" severity error;
         
         -- Test 2: Write to Control Register 1 (Switch Control)
@@ -363,7 +445,7 @@ begin
         send_uart_command(uart_rx, x"01", x"02", x"8000000080000055"); -- I2C0 and I2C1 enable
         
         wait for 1 us;
-        assert i2c0_start = '1' or i2c1_start = '1'
+        assert i2c_start_seen /= "00"
             report "ERROR: I2C start signals not asserted" severity warning;
         
         -- Test 4: Write SPI Configuration
@@ -390,10 +472,9 @@ begin
         -- Test 6: Read Status Register 0
         test_phase <= "READ_STATUS0    ";
         report "Test 6: Reading Status Register 0" severity note;
-        send_uart_command(uart_rx, x"02", x"10", x"0000000000000000");
-        
-        wait for 5 us;  -- Allow time for response
-        assert status_read_strobe(0) = '1' 
+        send_uart_command(uart_rx, x"02", x"10", x"0000000000000000", true);
+        receive_uart_response(uart_tx, status_reg0);
+        assert status_read_seen(0) = '1'
             report "ERROR: Status Register 0 read strobe not asserted" severity warning;
         
         -- Test 7: Test CRC Error
@@ -423,9 +504,19 @@ begin
         wait for 2 us;
         assert cmd_error = '1' 
             report "ERROR: Command error not detected for invalid address" severity error;
+
+        -- Test 9: A byte with a low stop bit must not enter the packet parser.
+        test_phase <= "FRAMING_TEST    ";
+        report "Test 9: Rejecting UART framing error" severity note;
+        uart_send_bad_stop_byte(uart_rx, x"00");
+        send_uart_command(uart_rx, x"01", x"00", x"0F0E0D0C0B0A0908");
+        wait for 1 us;
+        assert ctrl_reg0 = x"0F0E0D0C0B0A0908"
+            report "ERROR: Bad UART frame desynchronized packet parser" severity error;
         
         -- Test completed
         test_phase <= "COMPLETED       ";
+        test_completed <= true;
         report "=== All Tests Completed ===" severity note;
         
         wait for 10 us;
@@ -435,11 +526,19 @@ begin
     
     -- Monitor process for debugging
     monitor_process: process(clk)
+        variable cmd_error_prev : std_logic := '0';
+        variable crc_error_prev : std_logic := '0';
     begin
         if rising_edge(clk) then
+            if rst = '1' then
+                ctrl_write_seen <= (others => '0');
+                status_read_seen <= (others => '0');
+                i2c_start_seen <= (others => '0');
+            else
             -- Monitor control register writes
             for i in 0 to 5 loop
                 if ctrl_write_strobe(i) = '1' then
+                    ctrl_write_seen(i) <= '1';
                     report "Control Register " & integer'image(i) & " written" severity note;
                 end if;
             end loop;
@@ -447,15 +546,18 @@ begin
             -- Monitor status register reads
             for i in 0 to 5 loop
                 if status_read_strobe(i) = '1' then
+                    status_read_seen(i) <= '1';
                     report "Status Register " & integer'image(i) & " read" severity note;
                 end if;
             end loop;
             
             -- Monitor I2C activity
             if i2c0_start = '1' then
+                i2c_start_seen(0) <= '1';
                 report "I2C0 transaction started" severity note;
             end if;
             if i2c1_start = '1' then
+                i2c_start_seen(1) <= '1';
                 report "I2C1 transaction started" severity note;
             end if;
             
@@ -468,11 +570,14 @@ begin
             end if;
             
             -- Monitor errors
-            if cmd_error = '1' then
+            if cmd_error = '1' and cmd_error_prev = '0' then
                 report "Command error detected" severity warning;
             end if;
-            if crc_error = '1' then
+            if crc_error = '1' and crc_error_prev = '0' then
                 report "CRC error detected" severity warning;
+            end if;
+            cmd_error_prev := cmd_error;
+            crc_error_prev := crc_error;
             end if;
         end if;
     end process;

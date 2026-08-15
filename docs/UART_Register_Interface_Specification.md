@@ -103,14 +103,15 @@ Read responses follow a 10-byte structure:
 function crc8_update(crc_in: std_logic_vector(7 downto 0); 
                     data_in: std_logic_vector(7 downto 0)) 
                     return std_logic_vector is
-    variable crc_out : std_logic_vector(7 downto 0);
-    variable temp    : std_logic_vector(7 downto 0);
+    variable crc_out : std_logic_vector(7 downto 0) := crc_in;
 begin
-    temp := crc_in xor data_in;
-    crc_out := temp(6 downto 0) & '0';
-    if temp(7) = '1' then
-        crc_out := crc_out xor x"07";
-    end if;
+    for bit_index in 7 downto 0 loop
+        if (crc_out(7) xor data_in(bit_index)) = '1' then
+            crc_out := (crc_out(6 downto 0) & '0') xor x"07";
+        else
+            crc_out := crc_out(6 downto 0) & '0';
+        end if;
+    end loop;
     return crc_out;
 end function;
 ```
@@ -273,7 +274,8 @@ end function;
 - **Valid Ranges:** 0x00-0x05 (control), 0x10-0x15 (status)
 
 ### 6.3 Communication Timeouts
-- **UART:** No built-in timeout (handled by host application)
+- **UART:** Incomplete command packets time out after 10 ms
+- **Framing:** Bytes with an invalid stop bit are discarded
 - **I2C:** ACK error detection and reporting
 - **SPI:** Transaction completion monitoring
 

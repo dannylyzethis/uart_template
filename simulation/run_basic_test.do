@@ -46,7 +46,13 @@ add wave -color red /uart_register_tb/crc_error
 add wave /uart_register_tb/cmd_valid
 
 # Run simulation
-run 500 us
+set BreakOnAssertion 2
+run 12 ms
+
+if {[examine /uart_register_tb/test_completed] ne "TRUE"} {
+    echo "ERROR: Basic testbench did not reach completion"
+    quit -code 1
+}
 
 # Zoom to full view
 wave zoom full

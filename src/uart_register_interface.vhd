@@ -112,14 +112,15 @@ architecture behavioral of uart_register_interface is
     function crc8_update(crc_in: std_logic_vector(7 downto 0); 
                         data_in: std_logic_vector(7 downto 0)) 
                         return std_logic_vector is
-        variable crc_out : std_logic_vector(7 downto 0);
-        variable temp    : std_logic_vector(7 downto 0);
+        variable crc_out : std_logic_vector(7 downto 0) := crc_in;
     begin
-        temp := crc_in xor data_in;
-        crc_out := temp(6 downto 0) & '0';
-        if temp(7) = '1' then
-            crc_out := crc_out xor x"07";  -- CRC-8 polynomial
-        end if;
+        for bit_index in 7 downto 0 loop
+            if (crc_out(7) xor data_in(bit_index)) = '1' then
+                crc_out := (crc_out(6 downto 0) & '0') xor x"07";
+            else
+                crc_out := crc_out(6 downto 0) & '0';
+            end if;
+        end loop;
         return crc_out;
     end function;
     
@@ -182,9 +183,9 @@ architecture behavioral of uart_register_interface is
     signal status_read_strobe_int : std_logic_vector(5 downto 0);
 
     -- Timeout and watchdog
-    constant TIMEOUT_CYCLES : integer := 1_000_000;  -- 10ms at 100MHz (safety timeout)
+    constant TIMEOUT_CYCLES : integer := CLK_FREQ / 100;  -- 10 ms
     signal timeout_counter : integer range 0 to TIMEOUT_CYCLES := 0;
-    signal timeout_error   : std_logic := '0';
+    signal timeout_error_int : std_logic := '0';
 
 begin
     
@@ -236,7 +237,7 @@ begin
                 status_read_strobe_int <= (others => '0');
                 ctrl_registers <= (others => (others => '0'));
                 timeout_counter <= 0;
-                timeout_error <= '0';
+                timeout_error_int <= '0';
 
             else
                 -- Clear strobes by default
@@ -248,11 +249,10 @@ begin
                 -- Timeout watchdog counter
                 if state = IDLE then
                     timeout_counter <= 0;
-                    timeout_error <= '0';
                 else
                     if timeout_counter = TIMEOUT_CYCLES - 1 then
                         -- Timeout occurred - force return to IDLE
-                        timeout_error <= '1';
+                        timeout_error_int <= '1';
                         state <= IDLE;
                         timeout_counter <= 0;
                     else
@@ -265,6 +265,7 @@ begin
                     case state is
                         when IDLE =>
                             if rx_valid = '1' then
+                            timeout_error_int <= '0';
                             cmd_byte <= rx_data;
                             calc_crc <= crc8_update(x"00", rx_data);
                             state <= RX_ADDR;
@@ -490,6 +491,13 @@ begin
     spi1_config <= ctrl_registers(5);  -- Control register 5 for SPI1 config
     
     -- I2C control outputs
+    -- These bus ports are passive in the register-interface block. The actual
+    -- I2C masters own the open-drain drivers at the system integration level.
+    i2c0_sda <= 'Z';
+    i2c0_scl <= 'Z';
+    i2c1_sda <= 'Z';
+    i2c1_scl <= 'Z';
+
     i2c0_start <= i2c0_start_int;
     i2c1_start <= i2c1_start_int;
     
@@ -505,9 +513,15 @@ begin
     spi0_data_in <= ctrl_registers(3)(63 downto 32);  -- Upper 32 bits of ctrl_reg3
     spi1_data_in <= ctrl_registers(3)(31 downto 0);   -- Lower 32 bits of ctrl_reg3
     
-    -- SPI chip select outputs (from configuration)
-    spi0_cs <= spi0_config(35 downto 32);  -- 4-bit chip select
-    spi1_cs <= spi1_config(35 downto 32);  -- 4-bit chip select
+    -- The external SPI masters own the physical bus outputs. Drive high
+    -- impedance here to avoid a second driver when this register block and
+    -- the masters are connected to the same top-level nets.
+    spi0_sclk <= 'Z';
+    spi0_mosi <= 'Z';
+    spi0_cs <= (others => 'Z');
+    spi1_sclk <= 'Z';
+    spi1_mosi <= 'Z';
+    spi1_cs <= (others => 'Z');
     
     -- I2C/SPI trigger logic
     process(clk)
@@ -535,15 +549,13 @@ begin
                     end if;
                 end if;
                 
-                -- Trigger SPI0 transaction when ctrl_reg4 is written with enable bit set
-                if ctrl_write_strobe_int(4) = '1' then
+                -- SPI configuration writes only update settings. Writing the
+                -- shared data register launches each enabled SPI channel, so
+                -- the newly written transmit word is already available.
+                if ctrl_write_strobe_int(3) = '1' then
                     if spi0_config(63) = '1' then  -- SPI0 enable bit
                         spi0_start_int <= '1';
                     end if;
-                end if;
-
-                -- Trigger SPI1 transaction when ctrl_reg5 is written with enable bit set
-                if ctrl_write_strobe_int(5) = '1' then
                     if spi1_config(63) = '1' then  -- SPI1 enable bit
                         spi1_start_int <= '1';
                     end if;
@@ -556,7 +568,7 @@ begin
     cmd_valid <= cmd_valid_int;
     cmd_error <= cmd_error_int;
     crc_error <= crc_error_int;
-    timeout_error <= timeout_error;
+    timeout_error <= timeout_error_int;
 
 end behavioral;
 

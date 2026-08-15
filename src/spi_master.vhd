@@ -61,16 +61,12 @@ architecture behavioral of spi_master is
     -- Configuration latched at start
     signal cpol_latch    : std_logic := '0';
     signal cpha_latch    : std_logic := '0';
-    signal word_len_latch: integer range 0 to 31 := 0;
     signal clk_div_latch : unsigned(15 downto 0) := (others => '0');
     signal chip_sel_latch: std_logic_vector(3 downto 0) := (others => '1');
 
-    -- Edge detection
-    signal sclk_edge     : std_logic := '0';  -- Clock edge for sampling/shifting
     signal half_period   : std_logic := '0';  -- Half period tick
 
     -- Transfer control
-    signal bits_to_send  : integer range 0 to 32 := 0;
     signal edge_count    : integer range 0 to 63 := 0;
 
 begin
@@ -97,24 +93,6 @@ begin
                 else
                     clk_counter <= clk_counter + 1;
                     half_period <= '0';
-                end if;
-            end if;
-        end if;
-    end process;
-
-    -- Edge generation based on CPOL/CPHA
-    -- CPHA=0: Sample on first edge, shift on second edge
-    -- CPHA=1: Shift on first edge, sample on second edge
-    edge_detection: process(clk)
-    begin
-        if rising_edge(clk) then
-            if rst = '1' or state = IDLE then
-                sclk_edge <= '0';
-            else
-                if half_period = '1' and state = TRANSFER then
-                    sclk_edge <= '1';
-                else
-                    sclk_edge <= '0';
                 end if;
             end if;
         end if;
@@ -152,13 +130,11 @@ begin
                             -- Latch configuration
                             cpol_latch <= cpol;
                             cpha_latch <= cpha;
-                            word_len_latch <= to_integer(unsigned(word_len));
                             clk_div_latch <= unsigned(clk_div);
                             chip_sel_latch <= chip_sel;
                             shift_out <= data_in;
                             shift_in <= (others => '0');
 
-                            bits_to_send <= to_integer(unsigned(word_len)) + 1;
                             bit_counter <= to_integer(unsigned(word_len));
                             edge_count <= 0;
 
@@ -213,11 +189,11 @@ begin
                                 end if;
                             else
                                 -- CPHA=1 mode
-                                if (edge_count mod 2) = 1 then
-                                    -- Odd edges: shift out data
+                                if (edge_count mod 2) = 0 then
+                                    -- First/odd-numbered edge: shift out data
                                     mosi_int <= shift_out(bit_counter);
                                 else
-                                    -- Even edges: sample MISO
+                                    -- Second/even-numbered edge: sample MISO
                                     shift_in <= shift_in(30 downto 0) & miso;
 
                                     if bit_counter = 0 then

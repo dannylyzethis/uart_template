@@ -63,7 +63,13 @@ add wave -color red /uart_system_tb/timeout_error
 add wave -color green /uart_system_tb/cmd_valid
 
 # Run simulation (longer time for comprehensive test)
-run 20 ms
+set BreakOnAssertion 2
+run 40 ms
+
+if {[examine /uart_system_tb/test_completed] ne "TRUE"} {
+    echo "ERROR: System testbench did not reach completion"
+    quit -code 1
+}
 
 # Zoom to full view
 wave zoom full

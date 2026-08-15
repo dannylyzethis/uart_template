@@ -5,6 +5,16 @@ All notable changes to the UART Register Interface project will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Replaced the one-step checksum with standard CRC-8/ATM processing (poly 0x07)
+- Rejected UART bytes with invalid stop bits
+- Rounded the UART baud divider and derived the 10 ms timeout from `CLK_FREQ`
+- Added byte-level verification of UART response headers, payloads, stop bits, and CRC
+- Corrected SPI CPHA=1 edge ordering and transmit-data trigger sequencing
+- Corrected floating-bus I2C NACK detection
+
 ## [2.0.0] - 2025-11-22
 
 ### 🎉 Major Release - Complete System Overhaul

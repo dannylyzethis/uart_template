@@ -1,0 +1,27 @@
+set_global_assignment -name FAMILY "MAX 10"
+set_global_assignment -name DEVICE 10M08SAE144C8G
+set_global_assignment -name TOP_LEVEL_ENTITY uart_max10_top
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION 21.1.0
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name NUM_PARALLEL_PROCESSORS 4
+set_global_assignment -name MIN_CORE_JUNCTION_TEMP 0
+set_global_assignment -name MAX_CORE_JUNCTION_TEMP 85
+
+set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
+set_global_assignment -name VHDL_FILE ../src/uart_core.vhd
+set_global_assignment -name VHDL_FILE ../src/i2c_master.vhd
+set_global_assignment -name VHDL_FILE ../src/spi_master.vhd
+set_global_assignment -name VHDL_FILE ../src/uart_register_interface.vhd
+set_global_assignment -name VHDL_FILE ../src/uart_max10_top.vhd
+set_global_assignment -name SDC_FILE uart_max10_top.sdc
+
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED"
+set_global_assignment -name ENABLE_OCT_DONE OFF
+set_global_assignment -name STRATIX_DEVICE_IO_STANDARD "3.3-V LVTTL"
+
+# Pin assignments are intentionally deferred. Quartus may choose provisional
+# locations for fitting, but the resulting image must not be programmed until
+# the evaluation-kit connector pins and I/O bank voltages are confirmed.
+
+set_global_assignment -name LAST_QUARTUS_VERSION "21.1.0 Lite Edition"
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS_NO_OUTPUT_GND "AS INPUT TRI-STATED"
