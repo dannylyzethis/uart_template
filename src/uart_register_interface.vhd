@@ -102,6 +102,7 @@ architecture behavioral of uart_register_interface is
             tx        : out std_logic;
             rx_data   : out std_logic_vector(7 downto 0);
             rx_valid  : out std_logic;
+            framing_error : out std_logic;
             tx_data   : in  std_logic_vector(7 downto 0);
             tx_send   : in  std_logic;
             tx_busy   : out std_logic
@@ -126,7 +127,7 @@ architecture behavioral of uart_register_interface is
     
     -- Command packet format: [CMD][ADDR][DATA0..DATA7][CRC]
     -- CMD: 8-bit command (0x01=Write Control, 0x02=Read Status)
-    -- ADDR: 8-bit register address (0x00-0x05 for control, 0x10-0x15 for status)
+    -- ADDR: 8-bit register address (0x00-0x06 for control, 0x10-0x16 for status)
     -- DATA: 64-bit data (big endian)
     -- CRC: 8-bit CRC-8 of all previous bytes
     
@@ -141,6 +142,7 @@ architecture behavioral of uart_register_interface is
     -- UART signals
     signal rx_data    : std_logic_vector(7 downto 0);
     signal rx_valid   : std_logic;
+    signal uart_framing_error : std_logic;
     signal tx_data    : std_logic_vector(7 downto 0);
     signal tx_send    : std_logic;
     signal tx_busy    : std_logic;
@@ -160,9 +162,19 @@ architecture behavioral of uart_register_interface is
     signal ctrl_registers : ctrl_reg_array_type := (others => (others => '0'));
     
     -- Control signals
-    signal crc_error_int  : std_logic := '0';
-    signal cmd_error_int  : std_logic := '0';
     signal cmd_valid_int  : std_logic := '0';
+
+    -- Sticky error register (read at 0x16, write-one-to-clear at 0x06).
+    -- Bits 63:8 are reserved for future error sources.
+    constant ERR_INVALID_OPCODE : integer := 0;
+    constant ERR_INVALID_ADDRESS: integer := 1;
+    constant ERR_CRC            : integer := 2;
+    constant ERR_TIMEOUT        : integer := 3;
+    constant ERR_UART_FRAMING   : integer := 4;
+    constant ERR_UNEXPECTED_RX  : integer := 5;
+    constant ERR_I2C0_ACK       : integer := 6;
+    constant ERR_I2C1_ACK       : integer := 7;
+    signal error_flags_int : std_logic_vector(63 downto 0) := (others => '0');
     
     -- Response data
     signal response_data : std_logic_vector(63 downto 0);
@@ -185,7 +197,6 @@ architecture behavioral of uart_register_interface is
     -- Timeout and watchdog
     constant TIMEOUT_CYCLES : integer := CLK_FREQ / 100;  -- 10 ms
     signal timeout_counter : integer range 0 to TIMEOUT_CYCLES := 0;
-    signal timeout_error_int : std_logic := '0';
 
 begin
     
@@ -216,6 +227,7 @@ begin
             tx       => uart_tx,
             rx_data  => rx_data,
             rx_valid => rx_valid,
+            framing_error => uart_framing_error,
             tx_data  => tx_data,
             tx_send  => tx_send,
             tx_busy  => tx_busy
@@ -224,22 +236,42 @@ begin
     -- Main state machine
     process(clk)
         variable addr_int : integer range 0 to 255;
+        variable error_set_mask   : std_logic_vector(63 downto 0);
+        variable error_clear_mask : std_logic_vector(63 downto 0);
     begin
         if rising_edge(clk) then
             if rst = '1' then
                 state <= IDLE;
                 calc_crc <= (others => '0');
-                crc_error_int <= '0';
-                cmd_error_int <= '0';
                 cmd_valid_int <= '0';
                 tx_send <= '0';
                 ctrl_write_strobe_int <= (others => '0');
                 status_read_strobe_int <= (others => '0');
                 ctrl_registers <= (others => (others => '0'));
                 timeout_counter <= 0;
-                timeout_error_int <= '0';
+                error_flags_int <= (others => '0');
 
             else
+                error_set_mask := (others => '0');
+                error_clear_mask := (others => '0');
+
+                if uart_framing_error = '1' then
+                    error_set_mask(ERR_UART_FRAMING) := '1';
+                end if;
+                if i2c0_ack_error = '1' then
+                    error_set_mask(ERR_I2C0_ACK) := '1';
+                end if;
+                if i2c1_ack_error = '1' then
+                    error_set_mask(ERR_I2C1_ACK) := '1';
+                end if;
+                if rx_valid = '1' and
+                   (state = PROCESS_CMD or state = TX_RESPONSE or
+                    state = TX_DATA0 or state = TX_DATA1 or state = TX_DATA2 or
+                    state = TX_DATA3 or state = TX_DATA4 or state = TX_DATA5 or
+                    state = TX_DATA6 or state = TX_DATA7 or state = TX_CRC_OUT) then
+                    error_set_mask(ERR_UNEXPECTED_RX) := '1';
+                end if;
+
                 -- Clear strobes by default
                 ctrl_write_strobe_int <= (others => '0');
                 status_read_strobe_int <= (others => '0');
@@ -252,7 +284,7 @@ begin
                 else
                     if timeout_counter = TIMEOUT_CYCLES - 1 then
                         -- Timeout occurred - force return to IDLE
-                        timeout_error_int <= '1';
+                        error_set_mask(ERR_TIMEOUT) := '1';
                         state <= IDLE;
                         timeout_counter <= 0;
                     else
@@ -265,12 +297,9 @@ begin
                     case state is
                         when IDLE =>
                             if rx_valid = '1' then
-                            timeout_error_int <= '0';
                             cmd_byte <= rx_data;
                             calc_crc <= crc8_update(x"00", rx_data);
                             state <= RX_ADDR;
-                            crc_error_int <= '0';
-                            cmd_error_int <= '0';
                         end if;
                     
                     when RX_ADDR =>
@@ -345,7 +374,7 @@ begin
                     when PROCESS_CMD =>
                         -- Check CRC
                         if calc_crc /= received_crc then
-                            crc_error_int <= '1';
+                            error_set_mask(ERR_CRC) := '1';
                             state <= IDLE;
                         else
                             addr_int := to_integer(unsigned(addr_byte));
@@ -357,13 +386,16 @@ begin
                                         ctrl_registers(addr_int) <= data_word;
                                         ctrl_write_strobe_int(addr_int) <= '1';
                                         state <= IDLE;
+                                    elsif addr_int = 6 then
+                                        error_clear_mask := data_word;
+                                        state <= IDLE;
                                     else
-                                        cmd_error_int <= '1';
+                                        error_set_mask(ERR_INVALID_ADDRESS) := '1';
                                         state <= IDLE;
                                     end if;
                                 
                                 when x"02" => -- Read Status Register
-                                    if addr_int >= 16 and addr_int <= 21 then -- 0x10-0x15
+                                    if addr_int >= 16 and addr_int <= 22 then -- 0x10-0x16
                                         case addr_int is
                                             when 16 => response_data <= status_reg0;
                                             when 17 => response_data <= status_reg1;
@@ -371,19 +403,22 @@ begin
                                             when 19 => response_data <= status_reg3;
                                             when 20 => response_data <= status_reg4;
                                             when 21 => response_data <= status_reg5;
+                                            when 22 => response_data <= error_flags_int or error_set_mask;
                                             when others => response_data <= (others => '0');
                                         end case;
-                                        status_read_strobe_int(addr_int - 16) <= '1';
+                                        if addr_int <= 21 then
+                                            status_read_strobe_int(addr_int - 16) <= '1';
+                                        end if;
                                         -- Start CRC calculation for response
                                         tx_crc_calc <= crc8_update(x"00", x"02"); -- Response header
                                         state <= TX_RESPONSE;
                                     else
-                                        cmd_error_int <= '1';
+                                        error_set_mask(ERR_INVALID_ADDRESS) := '1';
                                         state <= IDLE;
                                     end if;
                                 
                                 when others =>
-                                    cmd_error_int <= '1';
+                                    error_set_mask(ERR_INVALID_OPCODE) := '1';
                                     state <= IDLE;
                             end case;
                         end if;
@@ -470,6 +505,9 @@ begin
                             state <= IDLE;
                     end case;
                 end if;  -- timeout check
+
+                -- New hardware errors win over a simultaneous software clear.
+                error_flags_int <= (error_flags_int and not error_clear_mask) or error_set_mask;
             end if;  -- reset check
         end if;  -- rising_edge
     end process;
@@ -566,9 +604,11 @@ begin
     
     -- Output status signals
     cmd_valid <= cmd_valid_int;
-    cmd_error <= cmd_error_int;
-    crc_error <= crc_error_int;
-    timeout_error <= timeout_error_int;
+    cmd_error <= error_flags_int(ERR_INVALID_OPCODE) or
+                 error_flags_int(ERR_INVALID_ADDRESS) or
+                 error_flags_int(ERR_UNEXPECTED_RX);
+    crc_error <= error_flags_int(ERR_CRC);
+    timeout_error <= error_flags_int(ERR_TIMEOUT);
 
 end behavioral;
 
@@ -623,6 +663,9 @@ end behavioral;
 --   [35:32] Chip select (4-bit, one-hot encoded)
 --   [31:0]  Reserved
 --
+-- Address 0x06: Sticky Error Clear
+--   [63:0]  Write-one-to-clear mask for Status Register 0x16
+--
 -- STATUS REGISTERS (Read by LabVIEW):
 -- Address 0x10: Status Register 0 - System Status
 --   [63:32] Timestamp (seconds since reset)
@@ -658,3 +701,7 @@ end behavioral;
 --   [47:32] I2C transaction counters  
 --   [31:16] Test completion counter
 --   [15:0]  Error counter
+--
+-- Address 0x16: Sticky Error Status
+--   [7:0]   Protocol, UART framing, timeout, and I2C ACK error flags
+--   [63:8]  Reserved for future error sources

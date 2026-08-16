@@ -104,8 +104,10 @@ In ModelSim, observe these key signals:
 
 ### Error Flags
 - `crc_error` - CRC validation failure
-- `cmd_error` - Invalid command
+- `cmd_error` - Invalid opcode/address or unexpected receive data
 - `timeout_error` - Incomplete packet timeout
+- Status register `0x16` - Sticky error details, including UART framing and I2C ACK errors
+- Control register `0x06` - Write-one-to-clear mask for sticky errors
 
 ---
 

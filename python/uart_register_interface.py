@@ -12,7 +12,7 @@ import serial
 import struct
 import time
 from typing import Optional, Tuple
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 
 
 class RegisterAddress(IntEnum):
@@ -24,6 +24,7 @@ class RegisterAddress(IntEnum):
     CTRL_SPI_DATA = 0x03
     CTRL_SPI0_CONFIG = 0x04
     CTRL_SPI1_CONFIG = 0x05
+    CTRL_ERROR_CLEAR = 0x06
 
     # Status Registers (Read)
     STATUS_SYSTEM = 0x10
@@ -32,6 +33,19 @@ class RegisterAddress(IntEnum):
     STATUS_SPI_DATA = 0x13
     STATUS_SWITCH = 0x14
     STATUS_COUNTERS = 0x15
+    STATUS_ERRORS = 0x16
+
+
+class ErrorFlag(IntFlag):
+    """Sticky FPGA error-register bits."""
+    INVALID_OPCODE = 1 << 0
+    INVALID_ADDRESS = 1 << 1
+    CRC_ERROR = 1 << 2
+    PACKET_TIMEOUT = 1 << 3
+    UART_FRAMING = 1 << 4
+    UNEXPECTED_RX = 1 << 5
+    I2C0_ACK = 1 << 6
+    I2C1_ACK = 1 << 7
 
 
 class Command(IntEnum):
@@ -144,7 +158,7 @@ class UARTRegisterInterface:
         Write to a control register
 
         Args:
-            address: Register address (0x00-0x05)
+            address: Register address (0x00-0x06)
             value: 64-bit value to write
 
         Returns:
@@ -154,7 +168,7 @@ class UARTRegisterInterface:
             ValueError: If address is invalid
             ConnectionError: If serial port is not open
         """
-        if not (0x00 <= address <= 0x05):
+        if not (0x00 <= address <= 0x06):
             raise ValueError(f"Invalid control register address: 0x{address:02X}")
 
         if not self.serial or not self.serial.is_open:
@@ -184,7 +198,7 @@ class UARTRegisterInterface:
         Read from a status register
 
         Args:
-            address: Register address (0x10-0x15)
+            address: Register address (0x10-0x16)
 
         Returns:
             64-bit register value, or None on error
@@ -193,7 +207,7 @@ class UARTRegisterInterface:
             ValueError: If address is invalid
             ConnectionError: If serial port is not open
         """
-        if not (0x10 <= address <= 0x15):
+        if not (0x10 <= address <= 0x16):
             raise ValueError(f"Invalid status register address: 0x{address:02X}")
 
         if not self.serial or not self.serial.is_open:
@@ -324,6 +338,15 @@ class UARTRegisterInterface:
         self.write_register(RegisterAddress.CTRL_SPI_DATA, self._spi_tx_data)
 
     # ============ High-Level Status Methods ============
+
+    def read_error_flags(self) -> Optional[ErrorFlag]:
+        """Read the sticky FPGA error register."""
+        value = self.read_register(RegisterAddress.STATUS_ERRORS)
+        return None if value is None else ErrorFlag(value)
+
+    def clear_error_flags(self, mask: int = 0xFFFFFFFFFFFFFFFF) -> bool:
+        """Clear selected sticky errors using write-one-to-clear semantics."""
+        return self.write_register(RegisterAddress.CTRL_ERROR_CLEAR, mask)
 
     def read_system_status(self) -> dict:
         """Read system status register"""

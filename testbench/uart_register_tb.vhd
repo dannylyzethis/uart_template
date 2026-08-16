@@ -78,7 +78,8 @@ architecture behavioral of uart_register_tb is
             spi1_data_valid : in    std_logic;
             cmd_valid       : out std_logic;
             cmd_error       : out std_logic;
-            crc_error       : out std_logic
+            crc_error       : out std_logic;
+            timeout_error   : out std_logic
         );
     end component;
     
@@ -95,6 +96,7 @@ architecture behavioral of uart_register_tb is
             tx        : out std_logic;
             rx_data   : out std_logic_vector(7 downto 0);
             rx_valid  : out std_logic;
+            framing_error : out std_logic;
             tx_data   : in  std_logic_vector(7 downto 0);
             tx_send   : in  std_logic;
             tx_busy   : out std_logic
@@ -169,6 +171,7 @@ architecture behavioral of uart_register_tb is
     signal cmd_valid       : std_logic;
     signal cmd_error       : std_logic;
     signal crc_error       : std_logic;
+    signal timeout_error   : std_logic;
     
     -- Test control
     signal test_running    : boolean := true;
@@ -392,7 +395,8 @@ begin
             spi1_data_valid => spi1_data_valid,
             cmd_valid       => cmd_valid,
             cmd_error       => cmd_error,
-            crc_error       => crc_error
+            crc_error       => crc_error,
+            timeout_error   => timeout_error
         );
     
     -- Clock generation
@@ -513,6 +517,59 @@ begin
         wait for 1 us;
         assert ctrl_reg0 = x"0F0E0D0C0B0A0908"
             report "ERROR: Bad UART frame desynchronized packet parser" severity error;
+
+        -- Test 10: Invalid opcode must accumulate without clearing prior errors.
+        test_phase <= "BAD_OPCODE      ";
+        report "Test 10: Latching invalid opcode" severity note;
+        send_uart_command(uart_rx, x"7F", x"00", x"0000000000000000");
+        wait for 2 us;
+        assert cmd_error = '1'
+            report "ERROR: Invalid opcode was not latched" severity error;
+
+        -- Test 11: An incomplete command must set the sticky timeout bit.
+        test_phase <= "TIMEOUT_TEST    ";
+        report "Test 11: Latching packet timeout" severity note;
+        uart_send_byte(uart_rx, x"01");
+        wait for 11 ms;
+        assert timeout_error = '1'
+            report "ERROR: Packet timeout was not latched" severity error;
+
+        -- Test 12: A byte received during a response is overlength/unexpected.
+        test_phase <= "OVERLENGTH_TEST ";
+        report "Test 12: Latching unexpected RX during response" severity note;
+        send_uart_command(uart_rx, x"02", x"16", x"0000000000000000", true);
+        wait for 2 * BIT_PERIOD;
+        uart_send_byte(uart_rx, x"AA");
+        wait for 1 ms;
+
+        -- Test 13: Peripheral errors join the same sticky error register.
+        test_phase <= "I2C_ERROR_TEST  ";
+        report "Test 13: Latching I2C ACK errors" severity note;
+        i2c0_ack_error <= '1';
+        i2c1_ack_error <= '1';
+        wait for 2 * CLK_PERIOD;
+        i2c0_ack_error <= '0';
+        i2c1_ack_error <= '0';
+
+        -- Every currently defined bit should now be set.
+        send_uart_command(uart_rx, x"02", x"16", x"0000000000000000", true);
+        receive_uart_response(uart_tx, x"00000000000000FF");
+
+        -- Test 14: Selective W1C clears opcode, CRC, and framing only.
+        test_phase <= "SELECTIVE_CLEAR ";
+        report "Test 14: Selectively clearing sticky errors" severity note;
+        send_uart_command(uart_rx, x"01", x"06", x"0000000000000015");
+        send_uart_command(uart_rx, x"02", x"16", x"0000000000000000", true);
+        receive_uart_response(uart_tx, x"00000000000000EA");
+
+        -- Test 15: Clear the complete error register.
+        test_phase <= "CLEAR_ALL       ";
+        report "Test 15: Clearing all sticky errors" severity note;
+        send_uart_command(uart_rx, x"01", x"06", x"FFFFFFFFFFFFFFFF");
+        send_uart_command(uart_rx, x"02", x"16", x"0000000000000000", true);
+        receive_uart_response(uart_tx, x"0000000000000000");
+        assert cmd_error = '0' and crc_error = '0' and timeout_error = '0'
+            report "ERROR: Legacy error outputs did not clear with register" severity error;
         
         -- Test completed
         test_phase <= "COMPLETED       ";

@@ -17,6 +17,7 @@ entity uart_core is
         tx        : out std_logic;
         rx_data   : out std_logic_vector(7 downto 0);
         rx_valid  : out std_logic;
+        framing_error : out std_logic;
         tx_data   : in  std_logic_vector(7 downto 0);
         tx_send   : in  std_logic;
         tx_busy   : out std_logic
@@ -41,6 +42,7 @@ architecture behavioral of uart_core is
     signal rx_bit_index  : integer range 0 to 7 := 0;
     signal rx_byte       : std_logic_vector(7 downto 0) := (others => '0');
     signal rx_valid_flag : std_logic := '0';
+    signal framing_error_flag : std_logic := '0';
     
     -- TX Internal Signals
     signal tx_clk_count  : integer range 0 to CLKS_PER_BIT-1 := 0;
@@ -54,6 +56,7 @@ begin
     -- Output assignments
     rx_data <= rx_byte;
     rx_valid <= rx_valid_flag;
+    framing_error <= framing_error_flag;
     tx <= tx_line;
     tx_busy <= tx_busy_flag;
     
@@ -67,8 +70,10 @@ begin
                 rx_bit_index <= 0;
                 rx_byte <= (others => '0');
                 rx_valid_flag <= '0';
+                framing_error_flag <= '0';
             else
                 rx_valid_flag <= '0';  -- Default: clear valid flag
+                framing_error_flag <= '0';
                 
                 case rx_state is
                     when RX_IDLE =>
@@ -113,6 +118,8 @@ begin
                             -- discarded rather than passed into the protocol.
                             if rx = '1' then
                                 rx_valid_flag <= '1';
+                            else
+                                framing_error_flag <= '1';
                             end if;
                             rx_clk_count <= 0;
                             rx_state <= RX_IDLE;

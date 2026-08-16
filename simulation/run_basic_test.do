@@ -43,11 +43,13 @@ add wave /uart_register_tb/spi1_start
 add wave -divider "Error Flags"
 add wave -color red /uart_register_tb/cmd_error
 add wave -color red /uart_register_tb/crc_error
+add wave -color red /uart_register_tb/timeout_error
 add wave /uart_register_tb/cmd_valid
+add wave -hex /uart_register_tb/DUT/error_flags_int
 
 # Run simulation
 set BreakOnAssertion 2
-run 12 ms
+run 45 ms
 
 if {[examine /uart_register_tb/test_completed] ne "TRUE"} {
     echo "ERROR: Basic testbench did not reach completion"

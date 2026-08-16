@@ -54,11 +54,11 @@ The UART Register Interface provides a robust, high-speed communication channel 
 └─────────────┘             │                     │               └─────────────┘
                             │  ┌───────────────┐  │                       
                             │  │ Control Regs  │  │               ┌─────────────┐
-                            │  │   0x00-0x05   │  │    I2C0/1     │   External  │
+                            │  │   0x00-0x06   │  │    I2C0/1     │   External  │
                             │  └───────────────┘  │◄─────────────►│ I2C Devices │
                             │  ┌───────────────┐  │               └─────────────┘
                             │  │ Status Regs   │  │                       
-                            │  │   0x10-0x15   │  │               ┌─────────────┐
+                            │  │   0x10-0x16   │  │               ┌─────────────┐
                             │  └───────────────┘  │    SPI0/1     │   External  │
                             │                     │◄─────────────►│ SPI Devices │
                             └─────────────────────┘               └─────────────┘
@@ -66,7 +66,7 @@ The UART Register Interface provides a robust, high-speed communication channel 
 
 ### 2.2 Core Components
 - **UART Controller:** 115200 baud, 8N1 configuration
-- **Register Bank:** 6 control + 6 status registers (64-bit each)
+- **Register Bank:** 6 application control/status registers plus sticky error status and clear registers
 - **CRC Engine:** CRC-8 polynomial (0x07) for error detection
 - **I2C Masters:** Dual I2C controllers for sensor communication
 - **SPI Masters:** Dual SPI controllers with configurable parameters
@@ -186,6 +186,15 @@ end function;
 | 35:32 | CHIP_SEL | Chip select (4-bit one-hot) |
 | 31:0 | Reserved | Future expansion |
 
+#### Register 0x06: Error Clear
+Writing a `1` clears the corresponding sticky bit in status register `0x16`.
+Writing a `0` leaves that bit unchanged. Hardware errors occurring during the
+same clock cycle take priority over software clearing.
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| 63:0 | ERROR_W1C | Write-one-to-clear mask for the error register |
+
 ### 4.2 Status Registers (Read Operations)
 
 #### Register 0x10: System Status
@@ -235,6 +244,21 @@ end function;
 | 31:16 | TEST_COUNTER | Test completion counter |
 | 15:0 | ERROR_COUNTER | Error counter |
 
+#### Register 0x16: Sticky Error Status
+Errors accumulate until reset or a masked write to register `0x06`.
+
+| Bit | Flag | Description |
+|-----|------|-------------|
+| 0 | INVALID_OPCODE | Command opcode is not `0x01` or `0x02` |
+| 1 | INVALID_ADDRESS | Address is outside the valid range for the opcode |
+| 2 | CRC_ERROR | Received command CRC does not match |
+| 3 | PACKET_TIMEOUT | An incomplete 11-byte command exceeded 10 ms |
+| 4 | UART_FRAMING | UART byte had a low or missing stop bit |
+| 5 | UNEXPECTED_RX | Byte arrived while a response or command processing was active |
+| 6 | I2C0_ACK | I2C channel 0 reported an ACK error |
+| 7 | I2C1_ACK | I2C channel 1 reported an ACK error |
+| 63:8 | Reserved | Future error sources; currently read as zero |
+
 ---
 
 ## 5. Interface Specifications
@@ -265,19 +289,25 @@ end function;
 
 ### 6.1 CRC Errors
 - **Detection:** Automatic CRC validation on all received packets
-- **Response:** CRC error flag set, packet discarded
+- **Response:** Sticky `CRC_ERROR` flag set, packet discarded
 - **Recovery:** Host retransmits command
 
 ### 6.2 Invalid Address Errors
 - **Detection:** Address validation during command processing
-- **Response:** Command error flag set, no register operation
-- **Valid Ranges:** 0x00-0x05 (control), 0x10-0x15 (status)
+- **Response:** Sticky `INVALID_ADDRESS` flag set, no register operation
+- **Valid Ranges:** 0x00-0x06 (control), 0x10-0x16 (status)
 
 ### 6.3 Communication Timeouts
 - **UART:** Incomplete command packets time out after 10 ms
-- **Framing:** Bytes with an invalid stop bit are discarded
+- **Framing:** Bytes with an invalid stop bit are discarded and set `UART_FRAMING`
 - **I2C:** ACK error detection and reporting
 - **SPI:** Transaction completion monitoring
+
+### 6.4 Sticky Error Handling
+- Error flags accumulate; a later valid command does not erase earlier faults.
+- Read register `0x16` to inspect all current flags.
+- Write a mask to register `0x06` to selectively clear flags.
+- Reset clears all flags.
 
 ---
 
