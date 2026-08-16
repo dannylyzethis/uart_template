@@ -10,14 +10,13 @@ A robust UART-based register interface for FPGA control in RF test equipment.
 - Configurable SPI parameters (CPOL, CPHA, word length, clock divider)
 
 ## Architecture
-- 6 control registers (write from host)
-- 6 status registers (read by host)
+- 6 application control/status registers plus sticky error status and clear registers
 - Register-based commands (no text parsing)
 - Consistent addressing scheme
 
 ## Register Map
-- Control: 0x00-0x05 (write operations)
-- Status: 0x10-0x15 (read operations)
+- Control: 0x00-0x06 (write operations; 0x06 clears sticky errors)
+- Status: 0x10-0x16 (read operations; 0x16 reports sticky errors)
 
 ## Files
 - `src/uart_register_interface.vhd` - Main design
