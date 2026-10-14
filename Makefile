@@ -1,7 +1,7 @@
 # Makefile for UART Register Interface Project
 # Provides convenient commands for simulation and testing
 
-.PHONY: help compile sim-basic sim-system clean test-python install-python
+.PHONY: help compile sim-basic sim-system sim-regression synth test-host clean test-python install-python
 
 # Default target
 help:
@@ -13,6 +13,9 @@ help:
 	@echo "  make compile      - Compile all VHDL sources"
 	@echo "  make sim-basic    - Run basic testbench"
 	@echo "  make sim-system   - Run comprehensive system test"
+	@echo "  make sim-regression - Run all protocol, peripheral and MAX 10 tests"
+	@echo "  make synth        - Compile and fit the provisional MAX 10 target"
+	@echo "  make test-host    - Run offline Python packet tests"
 	@echo "  make sim-gui      - Launch ModelSim GUI"
 	@echo ""
 	@echo "Python targets:"
@@ -74,9 +77,15 @@ doc:
 	@echo "  docs/UART_Register_Interface_Specification.md"
 	@echo "  readme.md"
 
-# Synthesis (placeholder - requires Vivado/Quartus)
+# Run protocol, peripheral and MAX 10 integration simulations with assertion/completion checks
+sim-regression:
+	cd simulation && vsim -c -do "do run_regression.do"
+
+test-host:
+	python -B -m unittest discover -s python -p "test_*.py" -v
+
+# Provisional MAX 10 fit; board pins/timing must be confirmed before programming.
 synth:
-	@echo "Synthesis must be run in Vivado or Quartus."
-	@echo "Load the project and use constraints/uart_register_interface.xdc"
+	cd quartus && quartus_sh --flow compile uart_max10_top
 
 .DEFAULT_GOAL := help

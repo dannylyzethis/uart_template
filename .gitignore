@@ -30,3 +30,10 @@ output_files/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Keep reproducible MAX 10 project inputs
+!quartus/uart_max10_top.qpf
+!quartus/uart_max10_top.qsf
+# Local simulator mappings and MCP library
+simulation/modelsim.ini
+simulation/mcp_work/

@@ -2,14 +2,16 @@
 # Compiles all source files and testbenches
 # Author: RF Test Automation Engineering
 
-# Create work library if it doesn't exist
-if {[file exists work]} {
-    vdel -lib work -all
-}
-vlib work
+onerror {quit -force -code 1}
+
+# Create work library if it does not exist
+if {![file exists work]} {vlib work}
+vmap work work
 
 # Compile source files in dependency order
 echo "Compiling VHDL source files..."
+
+vcom -2002 -work work ../src/sync_byte_fifo.vhd
 
 # 1. Basic UART core
 vcom -2002 -work work ../src/uart_core.vhd
@@ -21,11 +23,21 @@ vcom -2002 -work work ../src/spi_master.vhd
 # 3. Main UART register interface
 vcom -2002 -work work ../src/uart_register_interface.vhd
 
+vcom -2002 -work work ../src/uart_max10_top.vhd
+
 # 4. Testbenches
 echo "Compiling testbenches..."
 vcom -2002 -work work ../testbench/uart_register_tb.vhd
 vcom -2002 -work work ../testbench/uart_system_tb.vhd
 vcom -2002 -work work ../testbench/spi_master_tb.vhd
+
+vcom -2002 -work work ../testbench/spi_modes_tb.vhd
+vcom -2002 -work work ../testbench/i2c_test_slave.vhd
+vcom -2002 -work work ../testbench/i2c_master_tb.vhd
+vcom -2002 -work work ../testbench/uart_max10_tb.vhd
+
+vcom -2002 -work work ../testbench/sync_byte_fifo_tb.vhd
+vcom -2002 -work work ../testbench/uart_fifo_tb.vhd
 
 echo "Compilation complete!"
 echo ""

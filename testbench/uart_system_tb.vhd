@@ -23,7 +23,9 @@ architecture behavioral of uart_system_tb is
     component uart_register_interface is
         generic (
             CLK_FREQ        : integer := 100_000_000;
-            BAUD_RATE       : integer := 115200
+            BAUD_RATE       : integer := 115200;
+            RX_FIFO_DEPTH : positive range 1 to 65535 := 64;
+            TX_FIFO_DEPTH : positive range 1 to 65535 := 64
         );
         port (
             clk             : in  std_logic;
@@ -342,6 +344,10 @@ architecture behavioral of uart_system_tb is
     end procedure;
 
 begin
+
+    -- Physical I2C buses need pull-ups, even when no slave acknowledges.
+    i2c0_sda <= 'H'; i2c0_scl <= 'H';
+    i2c1_sda <= 'H'; i2c1_scl <= 'H';
 
     -- Instantiate DUT (Device Under Test)
     DUT: uart_register_interface

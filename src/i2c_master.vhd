@@ -64,6 +64,10 @@ architecture behavioral of i2c_master is
     signal data_valid_int: std_logic := '0';
     signal done_int      : std_logic := '0';
 
+    -- Synchronize and normalize open-drain bus inputs (including weak pull-ups).
+    signal scl_sync : std_logic_vector(1 downto 0) := (others => '1');
+    signal sda_sync : std_logic_vector(1 downto 0) := (others => '1');
+
     -- Timing control
     signal quarter_tick  : std_logic := '0';  -- I2C clock quarter period tick
 
@@ -84,11 +88,25 @@ begin
     data_valid <= data_valid_int;
     done <= done_int;
 
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if rst = '1' then
+                scl_sync <= (others => '1');
+                sda_sync <= (others => '1');
+            else
+                scl_sync <= scl_sync(0) & to_x01(scl);
+                sda_sync <= sda_sync(0) & to_x01(sda);
+            end if;
+        end if;
+    end process;
+
     -- Clock divider for I2C timing
     clock_divider: process(clk)
     begin
         if rising_edge(clk) then
-            if rst = '1' or state = IDLE then
+            if rst = '1' or state = IDLE or
+               (scl_out = '1' and scl_sync(1) /= '1') then
                 clk_counter <= 0;
                 quarter_tick <= '0';
             else
@@ -124,6 +142,9 @@ begin
                 data_valid_int <= '0';
                 done_int <= '0';
 
+                -- Wait for the observed SCL high level before advancing.
+                -- Resetting the divider during a stretch preserves a full high phase.
+                if not (scl_out = '1' and scl_sync(1) /= '1') then
                 case state is
 
                     when IDLE =>
@@ -211,7 +232,7 @@ begin
                                     phase := 2;
                                 when 2 =>
                                     -- Sample ACK (should be '0' for ACK)
-                                    if sda /= '0' then
+                                    if sda_sync(1) /= '0' then
                                         ack_error_int <= '1';  -- NACK received
                                     end if;
                                     scl_out <= '1';
@@ -278,7 +299,7 @@ begin
                                     scl_out <= '1';
                                     phase := 2;
                                 when 2 =>
-                                    if sda /= '0' then
+                                    if sda_sync(1) /= '0' then
                                         ack_error_int <= '1';  -- NACK received
                                     end if;
                                     scl_out <= '1';
@@ -305,13 +326,13 @@ begin
                                     phase := 2;
                                 when 2 =>
                                     -- Sample data on SCL high
-                                    shift_reg <= shift_reg(6 downto 0) & sda;
+                                    shift_reg <= shift_reg(6 downto 0) & sda_sync(1);
                                     scl_out <= '1';
                                     phase := 3;
                                 when 3 =>
                                     scl_out <= '0';
                                     if bit_counter = 0 then
-                                        data_out <= shift_reg(6 downto 0) & sda;  -- Last bit
+                                        data_out <= shift_reg;  -- Final bit was captured in phase 2
                                         data_valid_int <= '1';
                                         phase := 0;
                                         state <= SEND_READ_ACK;
@@ -376,6 +397,7 @@ begin
                         state <= IDLE;
 
                 end case;
+                end if;
             end if;
         end if;
     end process;

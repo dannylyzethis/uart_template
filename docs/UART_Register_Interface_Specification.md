@@ -58,7 +58,7 @@ The UART Register Interface provides a robust, high-speed communication channel 
                             │  └───────────────┘  │◄─────────────►│ I2C Devices │
                             │  ┌───────────────┐  │               └─────────────┘
                             │  │ Status Regs   │  │                       
-                            │  │   0x10-0x16   │  │               ┌─────────────┐
+                            │  │   0x10-0x18   │  │               ┌─────────────┐
                             │  └───────────────┘  │    SPI0/1     │   External  │
                             │                     │◄─────────────►│ SPI Devices │
                             └─────────────────────┘               └─────────────┘
@@ -148,11 +148,13 @@ end function;
 |------|-------|-------------|
 | 63 | I2C0_START | I2C0 transaction trigger |
 | 62:56 | I2C0_ADDR | I2C0 device address (7-bit) |
-| 55:48 | Reserved | Future expansion |
+| 55 | I2C0_READ | 0=write, 1=single-byte read |
+| 54:48 | Reserved | Future expansion |
 | 47:32 | Reserved | Future expansion |
 | 31 | I2C1_START | I2C1 transaction trigger |
 | 30:24 | I2C1_ADDR | I2C1 device address (7-bit) |
-| 23:16 | Reserved | Future expansion |
+| 23 | I2C1_READ | 0=write, 1=single-byte read |
+| 22:16 | Reserved | Future expansion |
 | 15:8 | I2C0_DATA | I2C0 data byte |
 | 7:0 | I2C1_DATA | I2C1 data byte |
 
@@ -252,12 +254,53 @@ Errors accumulate until reset or a masked write to register `0x06`.
 | 0 | INVALID_OPCODE | Command opcode is not `0x01` or `0x02` |
 | 1 | INVALID_ADDRESS | Address is outside the valid range for the opcode |
 | 2 | CRC_ERROR | Received command CRC does not match |
-| 3 | PACKET_TIMEOUT | An incomplete 11-byte command exceeded 10 ms |
+| 3 | PACKET_TIMEOUT | No next byte for 10 ms during an incomplete command |
 | 4 | UART_FRAMING | UART byte had a low or missing stop bit |
-| 5 | UNEXPECTED_RX | Byte arrived while a response or command processing was active |
+| 5 | UNEXPECTED_RX | Legacy bit; buffered RX no longer sets this flag |
 | 6 | I2C0_ACK | I2C channel 0 reported an ACK error |
 | 7 | I2C1_ACK | I2C channel 1 reported an ACK error |
-| 63:8 | Reserved | Future error sources; currently read as zero |
+| 8 | RX_OVERFLOW | Receive queue overflow; input flushed and framing recovery started |
+| 9 | TX_OVERFLOW | Transmit queue overflow; prevented by normal backpressure |
+| 63:10 | Reserved | Zero |
+
+#### Register 0x17: FIFO Status
+
+| Bits | Field | Meaning |
+| --- | --- | --- |
+| 15:0 | RX_LEVEL | Queued receive bytes |
+| 31:16 | TX_LEVEL | Queued transmit bytes |
+| 32 | TX_BUSY | UART serializer busy |
+| 33 | RX_RECOVERING | Input discarded until 10 ms of continuous line idle |
+| 34 | RX_FULL | Receive queue full |
+| 35 | TX_FULL | Transmit queue full |
+| 63:36 | Reserved | Zero |
+
+Snapshot is taken before this response is enqueued. TX level excludes the
+byte in the serializer and response bytes not yet enqueued.
+
+#### Register 0x18: FIFO Capacity
+
+Bits 15:0 report RX depth in bytes; bits 31:16 report TX depth. Bits 63:32
+are zero. `RX_FIFO_DEPTH` and `TX_FIFO_DEPTH` default to 64 bytes each and
+accept 1..65535 at elaboration, subject to available device resources.
+
+#### Queue behavior and overflow recovery
+
+RX and TX operate concurrently with unchanged command/response formats.
+A full TX queue pauses response construction; commands wait in RX order.
+These are UART byte queues. Hosts must still check SPI/I2C busy/completion
+status before starting another peripheral transaction.
+
+On RX overflow, queued input and an incomplete command are discarded. An
+already committed command/response finishes. Further input is dropped until
+the receive line stays high for 10 ms. Stop sending for at least 10 ms,
+drain outstanding responses, inspect/clear error bit 8, and retry unconfirmed
+work. Writes have no acknowledgment; do not blindly retry non-idempotent
+operations. No RTS/CTS flow control is provided. Reset clears queues and errors.
+
+Python provides `read_fifo_status()`, `read_fifo_capacity()`, and
+`RX_OVERFLOW`/`TX_OVERFLOW` error flags. Its host API remains synchronous;
+it does not pipeline requests.
 
 ---
 
@@ -295,10 +338,10 @@ Errors accumulate until reset or a masked write to register `0x06`.
 ### 6.2 Invalid Address Errors
 - **Detection:** Address validation during command processing
 - **Response:** Sticky `INVALID_ADDRESS` flag set, no register operation
-- **Valid Ranges:** 0x00-0x06 (control), 0x10-0x16 (status)
+- **Valid Ranges:** 0x00-0x06 (control), 0x10-0x18 (status)
 
 ### 6.3 Communication Timeouts
-- **UART:** Incomplete command packets time out after 10 ms
+- **UART:** Incomplete commands time out after 10 ms waiting for the next byte; TX backpressure does not trigger the packet watchdog
 - **Framing:** Bytes with an invalid stop bit are discarded and set `UART_FRAMING`
 - **I2C:** ACK error detection and reporting
 - **SPI:** Transaction completion monitoring

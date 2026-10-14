@@ -21,7 +21,9 @@ architecture behavioral of uart_register_tb is
     component uart_register_interface is
         generic (
             CLK_FREQ        : integer := 100_000_000;
-            BAUD_RATE       : integer := 115200
+            BAUD_RATE       : integer := 115200;
+            RX_FIFO_DEPTH : positive range 1 to 65535 := 64;
+            TX_FIFO_DEPTH : positive range 1 to 65535 := 64
         );
         port (
             clk             : in  std_logic;
@@ -534,13 +536,15 @@ begin
         assert timeout_error = '1'
             report "ERROR: Packet timeout was not latched" severity error;
 
-        -- Test 12: A byte received during a response is overlength/unexpected.
-        test_phase <= "OVERLENGTH_TEST ";
-        report "Test 12: Latching unexpected RX during response" severity note;
+        -- Test 12: Valid RX traffic during TX must be buffered, not rejected.
+        test_phase <= "DUPLEX_TEST     ";
+        report "Test 12: Receiving a command during a response" severity note;
         send_uart_command(uart_rx, x"02", x"16", x"0000000000000000", true);
         wait for 2 * BIT_PERIOD;
-        uart_send_byte(uart_rx, x"AA");
-        wait for 1 ms;
+        send_uart_command(uart_rx, x"01", x"00", x"0102030405060708");
+        wait for 2 us;
+        assert ctrl_reg0 = x"0102030405060708"
+            report "ERROR: Concurrent RX command was lost" severity error;
 
         -- Test 13: Peripheral errors join the same sticky error register.
         test_phase <= "I2C_ERROR_TEST  ";
@@ -551,16 +555,16 @@ begin
         i2c0_ack_error <= '0';
         i2c1_ack_error <= '0';
 
-        -- Every currently defined bit should now be set.
+        -- Original error bits except legacy unexpected-RX should now be set.
         send_uart_command(uart_rx, x"02", x"16", x"0000000000000000", true);
-        receive_uart_response(uart_tx, x"00000000000000FF");
+        receive_uart_response(uart_tx, x"00000000000000DF");
 
         -- Test 14: Selective W1C clears opcode, CRC, and framing only.
         test_phase <= "SELECTIVE_CLEAR ";
         report "Test 14: Selectively clearing sticky errors" severity note;
         send_uart_command(uart_rx, x"01", x"06", x"0000000000000015");
         send_uart_command(uart_rx, x"02", x"16", x"0000000000000000", true);
-        receive_uart_response(uart_tx, x"00000000000000EA");
+        receive_uart_response(uart_tx, x"00000000000000CA");
 
         -- Test 15: Clear the complete error register.
         test_phase <= "CLEAR_ALL       ";

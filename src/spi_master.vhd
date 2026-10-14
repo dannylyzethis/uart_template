@@ -43,7 +43,7 @@ end spi_master;
 architecture behavioral of spi_master is
 
     -- State machine
-    type state_type is (IDLE, CS_SETUP, TRANSFER, CS_HOLD);
+    type state_type is (IDLE, CS_SETUP, TRANSFER, FINISH_CLOCK, CS_HOLD);
     signal state : state_type := IDLE;
 
     -- Internal registers
@@ -67,7 +67,7 @@ architecture behavioral of spi_master is
     signal half_period   : std_logic := '0';  -- Half period tick
 
     -- Transfer control
-    signal edge_count    : integer range 0 to 63 := 0;
+    signal leading_edge  : std_logic := '1';
 
 begin
 
@@ -111,7 +111,7 @@ begin
                 data_valid_int <= '0';
                 done_int <= '0';
                 bit_counter <= 0;
-                edge_count <= 0;
+                leading_edge <= '1';
 
             else
                 -- Clear single-pulse outputs
@@ -136,7 +136,7 @@ begin
                             shift_in <= (others => '0');
 
                             bit_counter <= to_integer(unsigned(word_len));
-                            edge_count <= 0;
+                            leading_edge <= '1';
 
                             busy_int <= '1';
                             sclk_int <= cpol;
@@ -161,7 +161,7 @@ begin
                         if half_period = '1' then
                             -- Toggle SCLK
                             sclk_int <= not sclk_int;
-                            edge_count <= edge_count + 1;
+                            leading_edge <= not leading_edge;
 
                             -- Determine if this is a sample edge or shift edge
                             -- CPHA=0: Sample on odd edges (1,3,5...), Shift on even edges (2,4,6...)
@@ -169,27 +169,25 @@ begin
 
                             if cpha_latch = '0' then
                                 -- CPHA=0 mode
-                                if (edge_count mod 2) = 0 then
-                                    -- Even edges: sample MISO
+                                if leading_edge = '1' then
+                                    -- Leading edges: sample MISO
                                     shift_in <= shift_in(30 downto 0) & miso;
 
                                     if bit_counter = 0 then
                                         -- Last bit sampled
                                         data_out <= shift_in(30 downto 0) & miso;
                                         data_valid_int <= '1';
-                                        state <= CS_HOLD;
+                                        state <= FINISH_CLOCK;
                                     else
                                         bit_counter <= bit_counter - 1;
                                     end if;
                                 else
-                                    -- Odd edges: shift out next bit
-                                    if bit_counter > 0 then
-                                        mosi_int <= shift_out(bit_counter - 1);
-                                    end if;
+                                    -- The sample edge already selected the next bit.
+                                    mosi_int <= shift_out(bit_counter);
                                 end if;
                             else
                                 -- CPHA=1 mode
-                                if (edge_count mod 2) = 0 then
+                                if leading_edge = '1' then
                                     -- First/odd-numbered edge: shift out data
                                     mosi_int <= shift_out(bit_counter);
                                 else
@@ -206,6 +204,13 @@ begin
                                     end if;
                                 end if;
                             end if;
+                        end if;
+
+                    when FINISH_CLOCK =>
+                        -- CPHA=0 needs its final trailing edge with CS asserted.
+                        if half_period = '1' then
+                            sclk_int <= cpol_latch;
+                            state <= CS_HOLD;
                         end if;
 
                     when CS_HOLD =>

@@ -123,7 +123,7 @@ begin
         generic map (CLK_FREQ => CLK_FREQ, I2C_FREQ => 100_000)
         port map (
             clk => clk_50, rst => rst, sda => i2c0_sda, scl => i2c0_scl,
-            start => i2c0_start, addr => ctrl_reg2(62 downto 56), rw => '0',
+            start => i2c0_start, addr => ctrl_reg2(62 downto 56), rw => ctrl_reg2(55),
             data_in => i2c0_data_in, data_out => i2c0_data_out,
             data_valid => i2c0_data_valid, busy => i2c0_busy,
             ack_error => i2c0_ack_error, done => open
@@ -133,7 +133,7 @@ begin
         generic map (CLK_FREQ => CLK_FREQ, I2C_FREQ => 100_000)
         port map (
             clk => clk_50, rst => rst, sda => i2c1_sda, scl => i2c1_scl,
-            start => i2c1_start, addr => ctrl_reg2(30 downto 24), rw => '0',
+            start => i2c1_start, addr => ctrl_reg2(30 downto 24), rw => ctrl_reg2(23),
             data_in => i2c1_data_in, data_out => i2c1_data_out,
             data_valid => i2c1_data_valid, busy => i2c1_busy,
             ack_error => i2c1_ack_error, done => open

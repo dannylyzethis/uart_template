@@ -34,6 +34,8 @@ class RegisterAddress(IntEnum):
     STATUS_SWITCH = 0x14
     STATUS_COUNTERS = 0x15
     STATUS_ERRORS = 0x16
+    STATUS_FIFO = 0x17
+    STATUS_FIFO_CAPACITY = 0x18
 
 
 class ErrorFlag(IntFlag):
@@ -43,9 +45,11 @@ class ErrorFlag(IntFlag):
     CRC_ERROR = 1 << 2
     PACKET_TIMEOUT = 1 << 3
     UART_FRAMING = 1 << 4
-    UNEXPECTED_RX = 1 << 5
+    UNEXPECTED_RX = 1 << 5  # Legacy; buffered RX no longer sets this bit.
     I2C0_ACK = 1 << 6
     I2C1_ACK = 1 << 7
+    RX_OVERFLOW = 1 << 8
+    TX_OVERFLOW = 1 << 9
 
 
 class Command(IntEnum):
@@ -198,7 +202,7 @@ class UARTRegisterInterface:
         Read from a status register
 
         Args:
-            address: Register address (0x10-0x16)
+            address: Register address (0x10-0x18)
 
         Returns:
             64-bit register value, or None on error
@@ -207,7 +211,7 @@ class UARTRegisterInterface:
             ValueError: If address is invalid
             ConnectionError: If serial port is not open
         """
-        if not (0x10 <= address <= 0x16):
+        if not (0x10 <= address <= 0x18):
             raise ValueError(f"Invalid status register address: 0x{address:02X}")
 
         if not self.serial or not self.serial.is_open:
@@ -294,6 +298,20 @@ class UARTRegisterInterface:
 
         self.write_register(RegisterAddress.CTRL_I2C, value)
 
+    def start_i2c_read(self, channel: int, device_addr: int) -> bool:
+        """Start a single-byte read; poll bus status, then read_voltages().
+
+        Results are i2c0_rx/i2c1_rx. Inspect sticky I2C ACK errors as well.
+        This sends the command only; it does not wait for the I2C transaction.
+        """
+        if channel not in (0, 1):
+            raise ValueError("I2C channel must be 0 or 1")
+        if not 0 <= device_addr <= 0x7F:
+            raise ValueError("I2C address must be 7 bits")
+        shift = 32 if channel == 0 else 0
+        value = ((1 << 31) | (device_addr << 24) | (1 << 23)) << shift
+        return self.write_register(RegisterAddress.CTRL_I2C, value)
+
     def configure_spi(self, channel: int, cpol: bool, cpha: bool,
                      word_len: int, clk_div: int, chip_select: int):
         """
@@ -338,6 +356,27 @@ class UARTRegisterInterface:
         self.write_register(RegisterAddress.CTRL_SPI_DATA, self._spi_tx_data)
 
     # ============ High-Level Status Methods ============
+
+    def read_fifo_status(self) -> dict:
+        """Snapshot queue levels and flags before this response is enqueued."""
+        value = self.read_register(RegisterAddress.STATUS_FIFO)
+        if value is None:
+            return {}
+        return {
+            'rx_level': value & 0xFFFF,
+            'tx_level': (value >> 16) & 0xFFFF,
+            'tx_busy': bool(value & (1 << 32)),
+            'rx_recovering': bool(value & (1 << 33)),
+            'rx_full': bool(value & (1 << 34)),
+            'tx_full': bool(value & (1 << 35)),
+        }
+
+    def read_fifo_capacity(self) -> dict:
+        """Read configured RX/TX capacities in bytes."""
+        value = self.read_register(RegisterAddress.STATUS_FIFO_CAPACITY)
+        if value is None:
+            return {}
+        return {'rx_depth': value & 0xFFFF, 'tx_depth': (value >> 16) & 0xFFFF}
 
     def read_error_flags(self) -> Optional[ErrorFlag]:
         """Read the sticky FPGA error register."""

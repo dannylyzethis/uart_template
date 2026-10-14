@@ -9,7 +9,9 @@ use IEEE.NUMERIC_STD.ALL;
 entity uart_register_interface is
     generic (
         CLK_FREQ        : integer := 100_000_000;  -- System clock frequency
-        BAUD_RATE       : integer := 115200        -- UART baud rate
+        BAUD_RATE       : integer := 115200;       -- UART baud rate
+        RX_FIFO_DEPTH   : positive range 1 to 65535 := 64;
+        TX_FIFO_DEPTH   : positive range 1 to 65535 := 64
     );
     port (
         clk             : in  std_logic;
@@ -127,7 +129,7 @@ architecture behavioral of uart_register_interface is
     
     -- Command packet format: [CMD][ADDR][DATA0..DATA7][CRC]
     -- CMD: 8-bit command (0x01=Write Control, 0x02=Read Status)
-    -- ADDR: 8-bit register address (0x00-0x06 for control, 0x10-0x16 for status)
+    -- ADDR: 8-bit register address (0x00-0x06 for control, 0x10-0x18 for status)
     -- DATA: 64-bit data (big endian)
     -- CRC: 8-bit CRC-8 of all previous bytes
     
@@ -138,6 +140,13 @@ architecture behavioral of uart_register_interface is
                        TX_DATA4, TX_DATA5, TX_DATA6, TX_DATA7, TX_CRC_OUT);
     
     signal state : state_type := IDLE;
+    function receive_state(value : state_type) return boolean is
+    begin
+        return value = IDLE or value = RX_CMD or value = RX_ADDR or
+               value = RX_DATA0 or value = RX_DATA1 or value = RX_DATA2 or
+               value = RX_DATA3 or value = RX_DATA4 or value = RX_DATA5 or
+               value = RX_DATA6 or value = RX_DATA7 or value = RX_CRC;
+    end function;
     
     -- UART signals
     signal rx_data    : std_logic_vector(7 downto 0);
@@ -147,6 +156,15 @@ architecture behavioral of uart_register_interface is
     signal tx_send    : std_logic;
     signal tx_busy    : std_logic;
     
+    signal uart_rx_data : std_logic_vector(7 downto 0);
+    signal uart_rx_valid : std_logic;
+    signal rx_empty, rx_full, rx_pop, rx_push, rx_overflow, rx_fifo_reset : std_logic;
+    signal tx_empty, tx_full, tx_pop, tx_push, tx_overflow : std_logic;
+    signal tx_queue_data : std_logic_vector(7 downto 0);
+    signal rx_level : natural range 0 to RX_FIFO_DEPTH;
+    signal tx_level : natural range 0 to TX_FIFO_DEPTH;
+    signal rx_discard : std_logic := '0';
+
     -- UART RX synchronizer chain (critical for clock domain crossing)
     signal uart_rx_sync : std_logic_vector(2 downto 0) := "111";
     
@@ -165,7 +183,7 @@ architecture behavioral of uart_register_interface is
     signal cmd_valid_int  : std_logic := '0';
 
     -- Sticky error register (read at 0x16, write-one-to-clear at 0x06).
-    -- Bits 63:8 are reserved for future error sources.
+    -- Bits 63:10 are reserved; legacy unexpected-RX bit 5 is no longer set.
     constant ERR_INVALID_OPCODE : integer := 0;
     constant ERR_INVALID_ADDRESS: integer := 1;
     constant ERR_CRC            : integer := 2;
@@ -174,6 +192,8 @@ architecture behavioral of uart_register_interface is
     constant ERR_UNEXPECTED_RX  : integer := 5;
     constant ERR_I2C0_ACK       : integer := 6;
     constant ERR_I2C1_ACK       : integer := 7;
+    constant ERR_RX_OVERFLOW    : integer := 8;
+    constant ERR_TX_OVERFLOW    : integer := 9;
     signal error_flags_int : std_logic_vector(63 downto 0) := (others => '0');
     
     -- Response data
@@ -197,6 +217,8 @@ architecture behavioral of uart_register_interface is
     -- Timeout and watchdog
     constant TIMEOUT_CYCLES : integer := CLK_FREQ / 100;  -- 10 ms
     signal timeout_counter : integer range 0 to TIMEOUT_CYCLES := 0;
+    signal recovery_counter : integer range 0 to TIMEOUT_CYCLES := 0;
+    signal fifo_status, fifo_capacity : std_logic_vector(63 downto 0);
 
 begin
     
@@ -225,14 +247,61 @@ begin
             rst      => rst,
             rx       => uart_rx_sync(2),  -- Use synchronized RX signal
             tx       => uart_tx,
-            rx_data  => rx_data,
-            rx_valid => rx_valid,
+            rx_data  => uart_rx_data,
+            rx_valid => uart_rx_valid,
             framing_error => uart_framing_error,
             tx_data  => tx_data,
             tx_send  => tx_send,
             tx_busy  => tx_busy
         );
     
+    rx_fifo_reset <= rst or rx_overflow;
+    rx_push <= uart_rx_valid and not rx_discard and not rx_overflow;
+    rx_valid <= not rx_empty and not rx_discard and not rx_overflow;
+    rx_pop <= rx_valid when receive_state(state) and rst = '0' else '0';
+    tx_pop <= not tx_empty and not tx_busy and not rst;
+    tx_send <= tx_pop;
+
+    rx_fifo: entity work.sync_byte_fifo
+        generic map (DEPTH => RX_FIFO_DEPTH)
+        port map (clk => clk, rst => rx_fifo_reset, push => rx_push, pop => rx_pop,
+                  data_in => uart_rx_data, data_out => rx_data, empty => rx_empty,
+                  full => rx_full, level => rx_level, overflow => rx_overflow,
+                  underflow => open);
+    tx_fifo: entity work.sync_byte_fifo
+        generic map (DEPTH => TX_FIFO_DEPTH)
+        port map (clk => clk, rst => rst, push => tx_push, pop => tx_pop,
+                  data_in => tx_queue_data, data_out => tx_data, empty => tx_empty,
+                  full => tx_full, level => tx_level, overflow => tx_overflow,
+                  underflow => open);
+
+    -- Lost bytes destroy packet alignment. Flush RX, then require a quiet line
+    -- before accepting another command. Already committed TX responses finish.
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if rst = '1' then
+                rx_discard <= '0'; recovery_counter <= 0;
+            elsif rx_overflow = '1' then
+                rx_discard <= '1'; recovery_counter <= 0;
+            elsif rx_discard = '1' then
+                if uart_rx_valid = '1' or uart_framing_error = '1' or uart_rx_sync(2) /= '1' then
+                    recovery_counter <= 0;
+                elsif recovery_counter = TIMEOUT_CYCLES-1 then
+                    rx_discard <= '0'; recovery_counter <= 0;
+                else
+                    recovery_counter <= recovery_counter + 1;
+                end if;
+            end if;
+        end if;
+    end process;
+
+    fifo_status <= x"0000000" & tx_full & rx_full & rx_discard & tx_busy &
+                   std_logic_vector(to_unsigned(tx_level, 16)) &
+                   std_logic_vector(to_unsigned(rx_level, 16));
+    fifo_capacity <= x"00000000" & std_logic_vector(to_unsigned(TX_FIFO_DEPTH, 16)) &
+                     std_logic_vector(to_unsigned(RX_FIFO_DEPTH, 16));
+
     -- Main state machine
     process(clk)
         variable addr_int : integer range 0 to 255;
@@ -244,7 +313,7 @@ begin
                 state <= IDLE;
                 calc_crc <= (others => '0');
                 cmd_valid_int <= '0';
-                tx_send <= '0';
+                tx_push <= '0';
                 ctrl_write_strobe_int <= (others => '0');
                 status_read_strobe_int <= (others => '0');
                 ctrl_registers <= (others => (others => '0'));
@@ -264,36 +333,29 @@ begin
                 if i2c1_ack_error = '1' then
                     error_set_mask(ERR_I2C1_ACK) := '1';
                 end if;
-                if rx_valid = '1' and
-                   (state = PROCESS_CMD or state = TX_RESPONSE or
-                    state = TX_DATA0 or state = TX_DATA1 or state = TX_DATA2 or
-                    state = TX_DATA3 or state = TX_DATA4 or state = TX_DATA5 or
-                    state = TX_DATA6 or state = TX_DATA7 or state = TX_CRC_OUT) then
-                    error_set_mask(ERR_UNEXPECTED_RX) := '1';
-                end if;
+                if rx_overflow = '1' then error_set_mask(ERR_RX_OVERFLOW) := '1'; end if;
+                if tx_overflow = '1' then error_set_mask(ERR_TX_OVERFLOW) := '1'; end if;
 
                 -- Clear strobes by default
                 ctrl_write_strobe_int <= (others => '0');
                 status_read_strobe_int <= (others => '0');
-                tx_send <= '0';
+                tx_push <= '0';
                 cmd_valid_int <= '0';
 
-                -- Timeout watchdog counter
-                if state = IDLE then
-                    timeout_counter <= 0;
+                -- Time out only incomplete input packets, never a response
+                -- waiting for TX space. Successful byte consumption restarts it.
+                if rx_overflow = '1' and receive_state(state) then
+                    state <= IDLE; timeout_counter <= 0;
+                elsif receive_state(state) and state /= IDLE and rx_valid = '0' and
+                      timeout_counter = TIMEOUT_CYCLES-1 then
+                    error_set_mask(ERR_TIMEOUT) := '1';
+                    state <= IDLE; timeout_counter <= 0;
                 else
-                    if timeout_counter = TIMEOUT_CYCLES - 1 then
-                        -- Timeout occurred - force return to IDLE
-                        error_set_mask(ERR_TIMEOUT) := '1';
-                        state <= IDLE;
-                        timeout_counter <= 0;
-                    else
+                    if receive_state(state) and state /= IDLE and rx_valid = '0' then
                         timeout_counter <= timeout_counter + 1;
+                    else
+                        timeout_counter <= 0;
                     end if;
-                end if;
-
-                -- Only process commands if not in timeout
-                if timeout_counter /= TIMEOUT_CYCLES - 1 then
                     case state is
                         when IDLE =>
                             if rx_valid = '1' then
@@ -395,7 +457,7 @@ begin
                                     end if;
                                 
                                 when x"02" => -- Read Status Register
-                                    if addr_int >= 16 and addr_int <= 22 then -- 0x10-0x16
+                                    if addr_int >= 16 and addr_int <= 24 then -- 0x10-0x18
                                         case addr_int is
                                             when 16 => response_data <= status_reg0;
                                             when 17 => response_data <= status_reg1;
@@ -404,6 +466,8 @@ begin
                                             when 20 => response_data <= status_reg4;
                                             when 21 => response_data <= status_reg5;
                                             when 22 => response_data <= error_flags_int or error_set_mask;
+                                            when 23 => response_data <= fifo_status;
+                                            when 24 => response_data <= fifo_capacity;
                                             when others => response_data <= (others => '0');
                                         end case;
                                         if addr_int <= 21 then
@@ -424,80 +488,80 @@ begin
                         end if;
                     
                     when TX_RESPONSE =>
-                        if tx_busy = '0' then
-                            tx_data <= x"02"; -- Response header
-                            tx_send <= '1';
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= x"02"; -- Response header
+                            tx_push <= '1';
                             state <= TX_DATA0;
                         end if;
                     
                     when TX_DATA0 =>
-                        if tx_busy = '0' and tx_send = '0' then
-                            tx_data <= response_data(63 downto 56);
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= response_data(63 downto 56);
                             tx_crc_calc <= crc8_update(tx_crc_calc, response_data(63 downto 56));
-                            tx_send <= '1';
+                            tx_push <= '1';
                             state <= TX_DATA1;
                         end if;
                     
                     when TX_DATA1 =>
-                        if tx_busy = '0' and tx_send = '0' then
-                            tx_data <= response_data(55 downto 48);
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= response_data(55 downto 48);
                             tx_crc_calc <= crc8_update(tx_crc_calc, response_data(55 downto 48));
-                            tx_send <= '1';
+                            tx_push <= '1';
                             state <= TX_DATA2;
                         end if;
                     
                     when TX_DATA2 =>
-                        if tx_busy = '0' and tx_send = '0' then
-                            tx_data <= response_data(47 downto 40);
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= response_data(47 downto 40);
                             tx_crc_calc <= crc8_update(tx_crc_calc, response_data(47 downto 40));
-                            tx_send <= '1';
+                            tx_push <= '1';
                             state <= TX_DATA3;
                         end if;
                     
                     when TX_DATA3 =>
-                        if tx_busy = '0' and tx_send = '0' then
-                            tx_data <= response_data(39 downto 32);
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= response_data(39 downto 32);
                             tx_crc_calc <= crc8_update(tx_crc_calc, response_data(39 downto 32));
-                            tx_send <= '1';
+                            tx_push <= '1';
                             state <= TX_DATA4;
                         end if;
                     
                     when TX_DATA4 =>
-                        if tx_busy = '0' and tx_send = '0' then
-                            tx_data <= response_data(31 downto 24);
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= response_data(31 downto 24);
                             tx_crc_calc <= crc8_update(tx_crc_calc, response_data(31 downto 24));
-                            tx_send <= '1';
+                            tx_push <= '1';
                             state <= TX_DATA5;
                         end if;
                     
                     when TX_DATA5 =>
-                        if tx_busy = '0' and tx_send = '0' then
-                            tx_data <= response_data(23 downto 16);
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= response_data(23 downto 16);
                             tx_crc_calc <= crc8_update(tx_crc_calc, response_data(23 downto 16));
-                            tx_send <= '1';
+                            tx_push <= '1';
                             state <= TX_DATA6;
                         end if;
                     
                     when TX_DATA6 =>
-                        if tx_busy = '0' and tx_send = '0' then
-                            tx_data <= response_data(15 downto 8);
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= response_data(15 downto 8);
                             tx_crc_calc <= crc8_update(tx_crc_calc, response_data(15 downto 8));
-                            tx_send <= '1';
+                            tx_push <= '1';
                             state <= TX_DATA7;
                         end if;
                     
                     when TX_DATA7 =>
-                        if tx_busy = '0' and tx_send = '0' then
-                            tx_data <= response_data(7 downto 0);
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= response_data(7 downto 0);
                             tx_crc_calc <= crc8_update(tx_crc_calc, response_data(7 downto 0));
-                            tx_send <= '1';
+                            tx_push <= '1';
                             state <= TX_CRC_OUT;
                         end if;
                     
                     when TX_CRC_OUT =>
-                        if tx_busy = '0' and tx_send = '0' then
-                            tx_data <= tx_crc_calc;
-                            tx_send <= '1';
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= tx_crc_calc;
+                            tx_push <= '1';
                             state <= IDLE;
                         end if;
                     
@@ -606,7 +670,8 @@ begin
     cmd_valid <= cmd_valid_int;
     cmd_error <= error_flags_int(ERR_INVALID_OPCODE) or
                  error_flags_int(ERR_INVALID_ADDRESS) or
-                 error_flags_int(ERR_UNEXPECTED_RX);
+                 error_flags_int(ERR_UNEXPECTED_RX) or
+                 error_flags_int(ERR_RX_OVERFLOW) or error_flags_int(ERR_TX_OVERFLOW);
     crc_error <= error_flags_int(ERR_CRC);
     timeout_error <= error_flags_int(ERR_TIMEOUT);
 
@@ -631,11 +696,13 @@ end behavioral;
 -- Address 0x02: Control Register 2 - I2C Control & Data
 --   [63]    I2C0 Start transaction (write 1 to trigger)
 --   [62:56] I2C0 Device address (7-bit)
---   [55:48] Reserved
+--   [55]    I2C0 read (0=write, 1=single-byte read)
+--   [54:48] Reserved
 --   [47:32] Reserved
 --   [31]    I2C1 Start transaction (write 1 to trigger)
 --   [30:24] I2C1 Device address (7-bit)
---   [23:16] Reserved
+--   [23]    I2C1 read (0=write, 1=single-byte read)
+--   [22:16] Reserved
 --   [15:8]  I2C0 Data byte
 --   [7:0]   I2C1 Data byte
 --
@@ -703,5 +770,12 @@ end behavioral;
 --   [15:0]  Error counter
 --
 -- Address 0x16: Sticky Error Status
---   [7:0]   Protocol, UART framing, timeout, and I2C ACK error flags
---   [63:8]  Reserved for future error sources
+--   [7:0]   Protocol, UART framing, timeout, and I2C ACK errors (bit 5 unused)
+--   [8]     RX FIFO overflow
+--   [9]     TX FIFO overflow
+--   [63:10] Reserved
+-- Address 0x17: FIFO status
+--   [15:0] RX level; [31:16] TX level; [32] UART TX busy
+--   [33] RX recovering; [34] RX full; [35] TX full; [63:36] reserved
+-- Address 0x18: FIFO capacities
+--   [15:0] RX depth; [31:16] TX depth; [63:32] reserved

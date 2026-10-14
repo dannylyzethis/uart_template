@@ -104,7 +104,7 @@ In ModelSim, observe these key signals:
 
 ### Error Flags
 - `crc_error` - CRC validation failure
-- `cmd_error` - Invalid opcode/address or unexpected receive data
+- `cmd_error` - Invalid opcode/address or UART FIFO overflow
 - `timeout_error` - Incomplete packet timeout
 - Status register `0x16` - Sticky error details, including UART framing and I2C ACK errors
 - Control register `0x06` - Write-one-to-clear mask for sticky errors
@@ -359,3 +359,12 @@ You've successfully:
 **Questions?** Open an issue on [GitHub](https://github.com/yourusername/uart_template/issues)
 
 **Happy coding!** 🚀
+
+## UART queues
+
+The interface buffers 64 RX bytes and 64 TX bytes by default. Read FIFO status
+at 0x17 and capacities at 0x18, or use Python `read_fifo_status()` and
+`read_fifo_capacity()`. Overflow flags are bits 8/9 in sticky error status 0x16.
+After RX overflow, stop sending for at least 10 ms of continuous idle and drain
+pending responses before clearing the error and retrying unconfirmed commands.
+See the full specification for recovery and peripheral busy handling.
