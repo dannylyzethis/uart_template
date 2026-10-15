@@ -16,6 +16,7 @@ foreach {tb duration} {uart_register_tb {45 ms} uart_system_tb {40 ms} spi_maste
     echo "PASS: $tb"
     quit -sim
 }
+do address_tests.do
 do fifo_tests.do
 do i2c_matrix.do
 do spi_matrix.do

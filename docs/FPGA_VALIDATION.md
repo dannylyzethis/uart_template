@@ -1,6 +1,6 @@
 # FPGA validation and MAX 10 bring-up
 
-## Current result (2026-10-14)
+## Current result (2026-10-15)
 
 The confirmed SPI and I2C defects have been corrected in the working tree.
 ModelSim MCP exercises the protocol, peripheral controllers and the actual
@@ -12,36 +12,47 @@ MAX 10 target. Physical board validation is still pending.
 | --- | --- |
 | Part | 10M08SAE144C8G |
 | Top / clock | uart_max10_top / 50 MHz |
-| Logic elements | 1,779 / 8,064 (22%) |
-| Registers | 1,155 |
+| Logic elements | 1,808 / 8,064 (22%) |
+| Registers | 1,158 |
 | Pins | 26 / 101 |
 | RAM / multipliers / PLL | 1,024 data bits in 2 M9Ks / 0 / 0 |
-| Worst internal setup / hold slack | +10.197 ns / +0.096 ns |
-| Slow 85 C reported Fmax | 102.01 MHz |
+| Worst internal setup / hold slack | +10.432 ns / +0.101 ns |
+| Slow 85 C reported Fmax | 104.52 MHz |
 
 These timing numbers cover constrained internal paths. TimeQuest still reports
 seven unconstrained input ports and 21 unconstrained output ports. All 26 used
 pins lack exact location assignments. The fitter also raises a single-supply
 power review critical warning and a 3.3-V interface warning. Power is estimated
-at 194.88 mW with low confidence (insufficient toggle data). Do not program the
+at 194.65 mW with low confidence (insufficient toggle data). Do not program the
 SOF/POF until the board pin map, bank voltages and external timing are validated.
 Read stage reports even when the shell's final summary says zero warnings.
 Reports and generated images are in `quartus/output_files/` (ignored by Git).
 QPF/QSF inputs were already tracked; ignore exceptions make that intent clear.
+
+## Device addressing
+
+`uart_max10_top.DEVICE_ADDRESS` defaults to `x"16"` and is passed into the
+register interface. The command/reply first byte carries this device address
+and is included in CRC-8. Foreign packets are consumed silently. This constant
+requires no runtime flash/UFM writes. UART host software must be updated with
+the FPGA image; legacy packets are incompatible. Python accepts
+`device_address=0x16`, and both example scripts accept `--device-address 0x16`.
+See the register specification for packet tables and computed CRC examples.
 
 ## FIFO implementation
 
 The UART register interface now has independent 64-byte RX/TX FIFOs by
 default, using two M9K blocks (one per queue). Separating the synchronous RAM
 read register from forwarding logic lets Quartus infer embedded RAM. Relative
-to the pre-FIFO fit this adds 129 logic elements and 79 registers.
+to the pre-FIFO fit the FIFO implementation added 129 logic elements and 79
+registers; device addressing adds another 29 logic elements and 3 registers.
 
 Queue status/capacity are at 0x17/0x18; sticky RX/TX overflow flags are bits
 8/9 of 0x16. TX backpressure pauses response construction. RX overflow flushes
 unprocessed input and discards bytes until 10 ms of continuous idle. The
 watchdog now measures inter-byte gaps in incomplete commands, not TX stalls.
-Python includes FIFO status/capacity helpers and error enums. Packet formats
-are unchanged. See the register specification for precise field semantics.
+Python includes FIFO status/capacity helpers and error enums. Addressed
+commands now use 12 bytes and replies use 11 bytes. See the register specification for precise field semantics.
 
 ## Fixes and interface changes
 
@@ -94,9 +105,10 @@ exercise error detection and are not assertion failures.
 | i2c_master_tb matrix | 44 transactions: four read/write byte patterns plus address/data NACKs at 100/400 kHz, with/without 17 us stretches; STOP, valid/done pulses, high-phase duration |
 | sync_byte_fifo_tb | Depths 1/3/16/64: empty/full, simultaneous push/pop, wrap, rejected operations, reset, and 2,000 pseudorandom cycles per depth |
 | uart_fifo_tb | Serial packets with ordered bursts, 12 ms TX backpressure, queued writes, capacities/levels, RX overflow, idle recovery and W1C |
-| uart_max10_tb | Actual 50 MHz top: both I2C channels read/write with stretching, SPI0 mode-0/8-bit and SPI1 mode-1/32-bit loopback readback, UART response CRC and clean error status |
+| uart_address_tb | Addresses 0x16/0xA5/0x00/0xFF; foreign packet filtering including embedded local address bytes, invalid foreign packets, local CRC errors, address CRC coverage, exact command/write strobes, foreign timeout recovery |
+| uart_max10_tb | Actual 50 MHz top with DEVICE_ADDRESS=0xA5: both I2C channels read/write with stretching, SPI0 mode-0/8-bit and SPI1 mode-1/32-bit loopback readback, UART response CRC and clean error status |
 
-Focused runners: `run_fifo_test.do`, `run_spi_matrix.do`, `run_i2c_test.do`, `run_max10_test.do`.
+Focused runners: `run_address_test.do`, `run_fifo_test.do`, `run_spi_matrix.do`, `run_i2c_test.do`, `run_max10_test.do`.
 The retained `run_spi_diagnostic.do` and `run_spi_32bit_diagnostic.do` reproduce
 the formerly failing cases and now must pass. Run the main compile first when
 using these two focused diagnostics.
@@ -121,8 +133,9 @@ Offline Python wire-format checks (serial dependency/hardware mocked):
 python -B -m unittest discover -s python -p "test_*.py" -v
 ```
 
-The nine tests verify FIFO register packets, decoded levels/flags, overflow W1C,
-missing/malformed responses, both I2C read channels, unchanged write packets, CRC residue and
+The fourteen tests verify device address configuration, address-inclusive CRC,
+wrong-device/legacy reply rejection, FIFO register packets, decoded levels/flags, overflow W1C,
+missing/malformed responses, both I2C read channels, I2C write payloads, CRC residue and
 rejection of invalid channel/address values. Real serial transport is not tested.
 
 ## Quartus
@@ -150,6 +163,7 @@ against the actual board.
 
 ## Beads and remaining board work
 
+- `uart_template-fek`: addressed UART format, configurable top-level constant and host/RTL regression.
 - `uart_template-8g9`: UART FIFOs, host status helpers, overflow recovery and validation.
 - `uart_template-drf`: SPI fixes and regression matrix.
 - `uart_template-4ty`: I2C read capture/stretching fixes, read-select mapping,

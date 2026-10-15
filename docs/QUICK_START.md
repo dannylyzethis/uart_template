@@ -180,14 +180,15 @@ Test 3: Read All Status Registers
 
 ### Command Packet Format
 
-Every command is 11 bytes:
+Every command is 12 bytes:
 ```
-[CMD][ADDR][DATA0-7][CRC]
- 1    1      8       1
+[DEVICE][CMD][ADDR][DATA0-7][CRC]
+   1      1    1      8       1
 ```
 
 Example - Write 0x123456789ABCDEF0 to register 0x00:
 ```python
+device = 0x16                 # Device address, included in CRC
 cmd = 0x01                    # Write command
 addr = 0x00                   # Register 0
 data = 0x123456789ABCDEF0     # 64-bit value
@@ -199,10 +200,10 @@ uart.write_register(0x00, 0x123456789ABCDEF0)
 
 ### Response Packet Format
 
-Read responses are 10 bytes:
+Read responses are 11 bytes:
 ```
-[HDR][DATA0-7][CRC]
- 1     8       1
+[DEVICE][HDR][DATA0-7][CRC]
+   1      1     8       1
 ```
 
 Example - Read from register 0x10:
@@ -368,3 +369,17 @@ at 0x17 and capacities at 0x18, or use Python `read_fifo_status()` and
 After RX overflow, stop sending for at least 10 ms of continuous idle and drain
 pending responses before clearing the error and retrying unconfirmed commands.
 See the full specification for recovery and peripheral busy handling.
+
+## Device address
+
+Set the top-level `DEVICE_ADDRESS` generic (default `x"16"`) when building the
+FPGA image. This is a logic constant; the design performs no runtime flash/UFM
+writes for the address. Configure the host to match:
+
+```python
+uart = UARTRegisterInterface(port="COM3", device_address=0x16)
+```
+
+Commands/replies now begin with this byte, and the CRC covers it. Foreign
+packets are consumed silently. Legacy unaddressed hosts are incompatible.
+No broadcast address or shared-bus TX enable is implemented.

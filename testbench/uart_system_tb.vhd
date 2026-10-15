@@ -25,7 +25,8 @@ architecture behavioral of uart_system_tb is
             CLK_FREQ        : integer := 100_000_000;
             BAUD_RATE       : integer := 115200;
             RX_FIFO_DEPTH : positive range 1 to 65535 := 64;
-            TX_FIFO_DEPTH : positive range 1 to 65535 := 64
+            TX_FIFO_DEPTH : positive range 1 to 65535 := 64;
+            DEVICE_ADDRESS : std_logic_vector(7 downto 0) := x"16"
         );
         port (
             clk             : in  std_logic;
@@ -288,6 +289,9 @@ architecture behavioral of uart_system_tb is
         variable response_crc  : std_logic_vector(7 downto 0) := x"00";
     begin
         uart_receive_byte(uart_tx_sig, received_byte);
+        assert received_byte = x"16" report "Response device mismatch" severity error;
+        response_crc := crc8_update(response_crc, received_byte);
+        uart_receive_byte(uart_tx_sig, received_byte);
         assert received_byte = x"02"
             report "FAIL: UART response header mismatch" severity error;
         response_crc := crc8_update(response_crc, received_byte);
@@ -314,6 +318,7 @@ architecture behavioral of uart_system_tb is
     ) is
         variable crc : std_logic_vector(7 downto 0) := x"00";
     begin
+        crc := crc8_update(crc, x"16");
         crc := crc8_update(crc, cmd);
         crc := crc8_update(crc, addr);
         crc := crc8_update(crc, data(63 downto 56));
@@ -325,6 +330,7 @@ architecture behavioral of uart_system_tb is
         crc := crc8_update(crc, data(15 downto 8));
         crc := crc8_update(crc, data(7 downto 0));
 
+        uart_send_byte(uart_tx_sig, x"16");
         uart_send_byte(uart_tx_sig, cmd);
         uart_send_byte(uart_tx_sig, addr);
         uart_send_byte(uart_tx_sig, data(63 downto 56));
@@ -626,6 +632,7 @@ begin
         test_phase <= "TEST5: CRC Error Detection      ";
         report "Test 5: Testing CRC error detection" severity note;
 
+        uart_send_byte(uart_rx, x"16"); -- Device address
         uart_send_byte(uart_rx, x"01");
         uart_send_byte(uart_rx, x"00");
         for i in 0 to 7 loop
@@ -651,6 +658,7 @@ begin
         test_phase <= "TEST7: Timeout Detection        ";
         report "Test 7: Testing timeout detection" severity note;
 
+        uart_send_byte(uart_rx, x"16"); -- Device address
         uart_send_byte(uart_rx, x"01");  -- Send only CMD byte
         wait for 15 ms;  -- Wait longer than timeout
         assert timeout_error = '1'

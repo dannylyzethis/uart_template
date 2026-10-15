@@ -22,13 +22,13 @@ class FIFOStatusTest(unittest.TestCase):
         self.uart.serial = Mock(is_open=True)
 
     def respond(self, value):
-        data = bytes([2]) + value.to_bytes(8, 'big')
+        data = bytes([0x16, 2]) + value.to_bytes(8, 'big')
         self.uart.serial.read.return_value = data + bytes([crc8(data)])
 
     def check_request(self, address):
         packet = bytes(self.uart.serial.write.call_args.args[0])
-        self.assertEqual(packet[:10], bytes([2, address]) + bytes(8))
-        self.assertEqual(len(packet), 11)
+        self.assertEqual(packet[:11], bytes([0x16, 2, address]) + bytes(8))
+        self.assertEqual(len(packet), 12)
         self.assertEqual(crc8(packet), 0)
 
     def test_capacity_wire_format(self):
@@ -52,11 +52,11 @@ class FIFOStatusTest(unittest.TestCase):
         self.assertEqual(self.uart.read_error_flags(), ErrorFlag.RX_OVERFLOW | ErrorFlag.TX_OVERFLOW)
         self.uart.clear_error_flags(ErrorFlag.RX_OVERFLOW)
         packet = bytes(self.uart.serial.write.call_args.args[0])
-        self.assertEqual(packet[:10], bytes.fromhex('01 06 00 00 00 00 00 00 01 00'))
+        self.assertEqual(packet[:11], bytes.fromhex('16 01 06 00 00 00 00 00 00 01 00'))
         self.assertEqual(crc8(packet), 0)
 
     def test_missing_and_corrupt_responses(self):
-        for response in (b'', bytes(10)):
+        for response in (b'', bytes(11)):
             self.uart.serial.read.return_value = response
             self.assertEqual(self.uart.read_fifo_status(), {})
             self.assertEqual(self.uart.read_fifo_capacity(), {})

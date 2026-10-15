@@ -66,7 +66,8 @@ class UARTRegisterInterface:
     via UART with CRC-8 error detection.
     """
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1.0):
+    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1.0,
+                 device_address: int = 0x16):
         """
         Initialize UART interface
 
@@ -74,7 +75,11 @@ class UARTRegisterInterface:
             port: Serial port name (e.g., 'COM3' on Windows, '/dev/ttyUSB0' on Linux)
             baudrate: UART baud rate (default 115200)
             timeout: Read timeout in seconds (default 1.0)
+            device_address: FPGA device address (default 0x16)
         """
+        if not isinstance(device_address, int) or not 0 <= device_address <= 0xFF:
+            raise ValueError("Device address must be an integer byte (0..255)")
+        self.device_address = device_address
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
@@ -178,8 +183,8 @@ class UARTRegisterInterface:
         if not self.serial or not self.serial.is_open:
             raise ConnectionError("Serial port not open")
 
-        # Build command packet: [CMD][ADDR][DATA0-7][CRC]
-        packet = bytearray()
+        # Build command packet: [DEVICE][CMD][ADDR][DATA0-7][CRC]
+        packet = bytearray([self.device_address])
         packet.append(Command.WRITE)
         packet.append(address)
 
@@ -218,7 +223,7 @@ class UARTRegisterInterface:
             raise ConnectionError("Serial port not open")
 
         # Build read command packet
-        packet = bytearray()
+        packet = bytearray([self.device_address])
         packet.append(Command.READ)
         packet.append(address)
         packet.extend([0] * 8)  # Dummy data
@@ -232,22 +237,26 @@ class UARTRegisterInterface:
         self.serial.write(packet)
         self._stats['commands_sent'] += 1
 
-        # Wait for response: [HDR][DATA0-7][CRC] = 10 bytes
-        response = self.serial.read(10)
+        # Wait for response: [DEVICE][HDR][DATA0-7][CRC] = 11 bytes
+        response = self.serial.read(11)
 
-        if len(response) != 10:
+        if len(response) != 11:
             self._stats['timeouts'] += 1
             print(f"Warning: Incomplete response (got {len(response)} bytes)")
             return None
 
+        if response[0] != self.device_address:
+            print(f"Warning: Response from wrong device: 0x{response[0]:02X}")
+            return None
+
         # Verify response header
-        if response[0] != 0x02:
-            print(f"Warning: Invalid response header: 0x{response[0]:02X}")
+        if response[1] != 0x02:
+            print(f"Warning: Invalid response header: 0x{response[1]:02X}")
             return None
 
         # Verify CRC
-        calc_crc = self._calculate_crc(response[0:9])
-        recv_crc = response[9]
+        calc_crc = self._calculate_crc(response[0:10])
+        recv_crc = response[10]
 
         if calc_crc != recv_crc:
             self._stats['crc_errors'] += 1
@@ -255,7 +264,7 @@ class UARTRegisterInterface:
             return None
 
         # Extract 64-bit data (big-endian)
-        data = struct.unpack('>Q', response[1:9])[0]
+        data = struct.unpack('>Q', response[2:10])[0]
         self._stats['responses_received'] += 1
 
         return data

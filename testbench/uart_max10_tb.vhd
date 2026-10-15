@@ -28,6 +28,7 @@ architecture test of uart_max10_tb is
 begin
     clk <= not clk after 10 ns;
     dut: entity work.uart_max10_top
+        generic map (DEVICE_ADDRESS => x"A5")
         port map (clk_50 => clk, reset_n => reset_n, uart_rx => uart_rx, uart_tx => uart_tx,
                   i2c0_sda => sda0, i2c0_scl => scl0, i2c1_sda => sda1, i2c1_scl => scl1,
                   spi0_sclk => sclk0, spi0_mosi => mosi0, spi0_miso => mosi0, spi0_cs_n => cs0,
@@ -58,8 +59,10 @@ begin
         loop
             wait until expect_response;
             receive_byte(value);
+            assert value = x"A5" report "UART response device mismatch" severity error;
+            receive_byte(value);
             assert value = x"02" report "UART response header mismatch" severity error;
-            checksum := crc8(x"00", value);
+            checksum := crc8(crc8(x"00", x"A5"), value);
             for i in 0 to 7 loop
                 receive_byte(value);
                 assert value = expected(63-i*8 downto 56-i*8)
@@ -83,8 +86,8 @@ begin
                           value : std_logic_vector(63 downto 0)) is
             variable checksum : std_logic_vector(7 downto 0);
         begin
-            checksum := crc8(crc8(x"00", opcode), address);
-            send_byte(opcode); send_byte(address);
+            checksum := crc8(crc8(crc8(x"00", x"A5"), opcode), address);
+            send_byte(x"A5"); send_byte(opcode); send_byte(address);
             for i in 0 to 7 loop
                 checksum := crc8(checksum, value(63-i*8 downto 56-i*8));
                 send_byte(value(63-i*8 downto 56-i*8));

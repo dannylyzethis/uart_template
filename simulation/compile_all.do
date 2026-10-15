@@ -43,3 +43,5 @@ echo "Compilation complete!"
 echo ""
 echo "To run basic testbench:       do run_basic_test.do"
 echo "To run comprehensive test:    do run_system_test.do"
+
+vcom -2002 -work work ../testbench/uart_address_tb.vhd

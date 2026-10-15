@@ -23,7 +23,8 @@ architecture behavioral of uart_register_tb is
             CLK_FREQ        : integer := 100_000_000;
             BAUD_RATE       : integer := 115200;
             RX_FIFO_DEPTH : positive range 1 to 65535 := 64;
-            TX_FIFO_DEPTH : positive range 1 to 65535 := 64
+            TX_FIFO_DEPTH : positive range 1 to 65535 := 64;
+            DEVICE_ADDRESS : std_logic_vector(7 downto 0) := x"16"
         );
         port (
             clk             : in  std_logic;
@@ -243,6 +244,9 @@ architecture behavioral of uart_register_tb is
         variable response_crc  : std_logic_vector(7 downto 0) := x"00";
     begin
         uart_receive_byte(uart_tx_sig, received_byte);
+        assert received_byte = x"16" report "Response device mismatch" severity error;
+        response_crc := crc8_update(response_crc, received_byte);
+        uart_receive_byte(uart_tx_sig, received_byte);
         assert received_byte = x"02"
             report "ERROR: UART response header mismatch" severity error;
         response_crc := crc8_update(response_crc, received_byte);
@@ -304,6 +308,7 @@ architecture behavioral of uart_register_tb is
         variable crc : std_logic_vector(7 downto 0) := x"00";
     begin
         -- Calculate CRC
+        crc := crc8_update(crc, x"16");
         crc := crc8_update(crc, cmd);
         crc := crc8_update(crc, addr);
         crc := crc8_update(crc, data(63 downto 56));
@@ -316,6 +321,7 @@ architecture behavioral of uart_register_tb is
         crc := crc8_update(crc, data(7 downto 0));
         
         -- Send packet
+        uart_send_byte(uart_tx_sig, x"16");
         uart_send_byte(uart_tx_sig, cmd);
         uart_send_byte(uart_tx_sig, addr);
         uart_send_byte(uart_tx_sig, data(63 downto 56));
@@ -486,6 +492,7 @@ begin
         -- Test 7: Test CRC Error
         test_phase <= "CRC_ERROR_TEST  ";
         report "Test 7: Testing CRC Error Detection" severity note;
+        uart_send_byte(uart_rx, x"16"); -- Device address
         uart_send_byte(uart_rx, x"01");  -- CMD
         uart_send_byte(uart_rx, x"00");  -- ADDR
         uart_send_byte(uart_rx, x"12");  -- DATA
@@ -531,6 +538,7 @@ begin
         -- Test 11: An incomplete command must set the sticky timeout bit.
         test_phase <= "TIMEOUT_TEST    ";
         report "Test 11: Latching packet timeout" severity note;
+        uart_send_byte(uart_rx, x"16"); -- Device address
         uart_send_byte(uart_rx, x"01");
         wait for 11 ms;
         assert timeout_error = '1'

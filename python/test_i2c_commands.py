@@ -14,8 +14,8 @@ class I2CCommandsTest(unittest.TestCase):
 
     def check_packet(self, prefix):
         packet = bytes(self.uart.serial.write.call_args.args[0])
-        self.assertEqual(packet[:10], bytes.fromhex(prefix))
-        self.assertEqual(len(packet), 11)
+        self.assertEqual(packet[:11], bytes([0x16]) + bytes.fromhex(prefix))
+        self.assertEqual(len(packet), 12)
         # CRC-8 residue over the transmitted packet must be zero.
         crc = 0
         for byte in packet:

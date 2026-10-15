@@ -117,6 +117,8 @@ def main():
     parser.add_argument('--test', type=str, choices=['i2c', 'spi', 'both'], default='both',
                        help='Test to run (default: both)')
 
+    parser.add_argument('--device-address', type=lambda value: int(value, 0), default=0x16,
+                        help='FPGA device address, decimal or hex (default: 0x16)')
     args = parser.parse_args()
 
     print("="*60)
@@ -126,7 +128,7 @@ def main():
     print(f"  Test: {args.test}")
 
     try:
-        with UARTRegisterInterface(port=args.port) as uart:
+        with UARTRegisterInterface(port=args.port, device_address=args.device_address) as uart:
 
             # Enable system
             print("\nEnabling system...")

@@ -11,7 +11,8 @@ entity uart_register_interface is
         CLK_FREQ        : integer := 100_000_000;  -- System clock frequency
         BAUD_RATE       : integer := 115200;       -- UART baud rate
         RX_FIFO_DEPTH   : positive range 1 to 65535 := 64;
-        TX_FIFO_DEPTH   : positive range 1 to 65535 := 64
+        TX_FIFO_DEPTH   : positive range 1 to 65535 := 64;
+        DEVICE_ADDRESS  : std_logic_vector(7 downto 0) := x"16"
     );
     port (
         clk             : in  std_logic;
@@ -127,7 +128,7 @@ architecture behavioral of uart_register_interface is
         return crc_out;
     end function;
     
-    -- Command packet format: [CMD][ADDR][DATA0..DATA7][CRC]
+    -- Command packet format: [DEVICE][CMD][ADDR][DATA0..DATA7][CRC]
     -- CMD: 8-bit command (0x01=Write Control, 0x02=Read Status)
     -- ADDR: 8-bit register address (0x00-0x06 for control, 0x10-0x18 for status)
     -- DATA: 64-bit data (big endian)
@@ -136,10 +137,11 @@ architecture behavioral of uart_register_interface is
     type state_type is (IDLE, RX_CMD, RX_ADDR, RX_DATA0, RX_DATA1, 
                        RX_DATA2, RX_DATA3, RX_DATA4, RX_DATA5, RX_DATA6, RX_DATA7, 
                        RX_CRC, PROCESS_CMD, 
-                       TX_RESPONSE, TX_DATA0, TX_DATA1, TX_DATA2, TX_DATA3, 
+                       TX_DEVICE, TX_RESPONSE, TX_DATA0, TX_DATA1, TX_DATA2, TX_DATA3,
                        TX_DATA4, TX_DATA5, TX_DATA6, TX_DATA7, TX_CRC_OUT);
     
     signal state : state_type := IDLE;
+    signal device_match : boolean := false;
     function receive_state(value : state_type) return boolean is
     begin
         return value = IDLE or value = RX_CMD or value = RX_ADDR or
@@ -311,6 +313,7 @@ begin
         if rising_edge(clk) then
             if rst = '1' then
                 state <= IDLE;
+                device_match <= false;
                 calc_crc <= (others => '0');
                 cmd_valid_int <= '0';
                 tx_push <= '0';
@@ -348,7 +351,7 @@ begin
                     state <= IDLE; timeout_counter <= 0;
                 elsif receive_state(state) and state /= IDLE and rx_valid = '0' and
                       timeout_counter = TIMEOUT_CYCLES-1 then
-                    error_set_mask(ERR_TIMEOUT) := '1';
+                    if device_match then error_set_mask(ERR_TIMEOUT) := '1'; end if;
                     state <= IDLE; timeout_counter <= 0;
                 else
                     if receive_state(state) and state /= IDLE and rx_valid = '0' then
@@ -357,13 +360,20 @@ begin
                         timeout_counter <= 0;
                     end if;
                     case state is
-                        when IDLE =>
-                            if rx_valid = '1' then
-                            cmd_byte <= rx_data;
+                    when IDLE =>
+                        if rx_valid = '1' then
+                            device_match <= rx_data = DEVICE_ADDRESS;
                             calc_crc <= crc8_update(x"00", rx_data);
+                            state <= RX_CMD;
+                        end if;
+
+                    when RX_CMD =>
+                        if rx_valid = '1' then
+                            cmd_byte <= rx_data;
+                            calc_crc <= crc8_update(calc_crc, rx_data);
                             state <= RX_ADDR;
                         end if;
-                    
+
                     when RX_ADDR =>
                         if rx_valid = '1' then
                             addr_byte <= rx_data;
@@ -434,8 +444,11 @@ begin
                         end if;
                     
                     when PROCESS_CMD =>
-                        -- Check CRC
-                        if calc_crc /= received_crc then
+                        -- Consume complete foreign packets without side effects, even
+                        -- if their opcode, register or CRC is invalid for this device.
+                        if not device_match then
+                            state <= IDLE;
+                        elsif calc_crc /= received_crc then
                             error_set_mask(ERR_CRC) := '1';
                             state <= IDLE;
                         else
@@ -474,8 +487,8 @@ begin
                                             status_read_strobe_int(addr_int - 16) <= '1';
                                         end if;
                                         -- Start CRC calculation for response
-                                        tx_crc_calc <= crc8_update(x"00", x"02"); -- Response header
-                                        state <= TX_RESPONSE;
+                                        tx_crc_calc <= crc8_update(crc8_update(x"00", DEVICE_ADDRESS), x"02");
+                                        state <= TX_DEVICE;
                                     else
                                         error_set_mask(ERR_INVALID_ADDRESS) := '1';
                                         state <= IDLE;
@@ -487,6 +500,13 @@ begin
                             end case;
                         end if;
                     
+                    when TX_DEVICE =>
+                        if tx_full = '0' and tx_push = '0' then
+                            tx_queue_data <= DEVICE_ADDRESS;
+                            tx_push <= '1';
+                            state <= TX_RESPONSE;
+                        end if;
+
                     when TX_RESPONSE =>
                         if tx_full = '0' and tx_push = '0' then
                             tx_queue_data <= x"02"; -- Response header

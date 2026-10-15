@@ -63,9 +63,11 @@ begin
     begin
         loop
             receive_byte(value);
+            assert value = x"16" report "UART response device mismatch" severity error;
+            receive_byte(value);
             assert value = x"02" report "UART response header mismatch" severity error;
             assert responses < expected_count report "Unrequested UART response" severity error;
-            checksum := crc8(x"00", value);
+            checksum := crc8(crc8(x"00", x"16"), value);
             for i in 0 to 7 loop
                 receive_byte(value);
                 assert value = expected_words(responses)(63-i*8 downto 56-i*8)
@@ -89,8 +91,8 @@ begin
                           value : std_logic_vector(63 downto 0)) is
             variable checksum : std_logic_vector(7 downto 0);
         begin
-            checksum := crc8(crc8(x"00", opcode), address);
-            send_byte(opcode); send_byte(address);
+            checksum := crc8(crc8(crc8(x"00", x"16"), opcode), address);
+            send_byte(x"16"); send_byte(opcode); send_byte(address);
             for i in 0 to 7 loop
                 checksum := crc8(checksum, value(63-i*8 downto 56-i*8));
                 send_byte(value(63-i*8 downto 56-i*8));

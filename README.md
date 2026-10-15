@@ -42,7 +42,17 @@ See [FPGA validation](docs/FPGA_VALIDATION.md) for ModelSim MCP and Quartus MCP 
 RX and TX each have a configurable 64-byte FIFO by default, with concurrent
 receive/transmit, TX backpressure, queue status, and sticky overflow flags.
 RX overflow flushes queued input and requires 10 ms of continuous line idle
-to resynchronize. Packet formats are unchanged. See the
+to resynchronize. Packets now include a leading device address in the CRC. See the
 [register specification](docs/UART_Register_Interface_Specification.md) for
 queue fields and recovery, and [validation results](docs/FPGA_VALIDATION.md)
 for ModelSim coverage and the provisional MAX 10 fit.
+
+### Device addressing
+
+Commands: `[DEVICE][CMD][REGISTER][DATA x 8][CRC]` (12 bytes).
+Replies: `[DEVICE][0x02][DATA x 8][CRC]` (11 bytes).
+The top-level `DEVICE_ADDRESS` generic defaults to `x"16"`; it is a logic
+constant, with no runtime flash writes. Other device addresses are ignored
+while preserving packet boundaries. Python uses
+`UARTRegisterInterface(port="COM3", device_address=0x16)`.
+This wire-format change requires updating legacy hosts with the FPGA image.

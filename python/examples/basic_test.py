@@ -15,14 +15,14 @@ from uart_register_interface import UARTRegisterInterface, RegisterAddress
 import time
 
 
-def run_basic_test(port='/dev/ttyUSB0'):
+def run_basic_test(port='/dev/ttyUSB0', device_address=0x16):
     """Run basic register read/write test"""
 
     print("="*60)
     print("  UART Register Interface - Basic Test")
     print("="*60)
 
-    with UARTRegisterInterface(port=port) as uart:
+    with UARTRegisterInterface(port=port, device_address=device_address) as uart:
 
         # Test 1: Write and verify control register
         print("\nTest 1: Write Control Register 0")
@@ -98,10 +98,12 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=str, default='/dev/ttyUSB0',
                        help='Serial port (default: /dev/ttyUSB0)')
 
+    parser.add_argument('--device-address', type=lambda value: int(value, 0), default=0x16,
+                        help='FPGA device address, decimal or hex (default: 0x16)')
     args = parser.parse_args()
 
     try:
-        run_basic_test(port=args.port)
+        run_basic_test(port=args.port, device_address=args.device_address)
     except KeyboardInterrupt:
         print("\n\nTest interrupted by user")
     except Exception as e:

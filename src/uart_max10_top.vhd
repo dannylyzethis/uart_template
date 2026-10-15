@@ -3,6 +3,7 @@ use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.NUMERIC_STD.ALL;
 
 entity uart_max10_top is
+    generic (DEVICE_ADDRESS : std_logic_vector(7 downto 0) := x"16");
     port (
         clk_50    : in  std_logic;
         reset_n   : in  std_logic;
@@ -85,7 +86,8 @@ begin
     register_interface: entity work.uart_register_interface
         generic map (
             CLK_FREQ  => CLK_FREQ,
-            BAUD_RATE => 115200
+            BAUD_RATE => 115200,
+            DEVICE_ADDRESS => DEVICE_ADDRESS
         )
         port map (
             clk => clk_50, rst => rst, uart_rx => uart_rx, uart_tx => uart_tx,

@@ -77,23 +77,49 @@ The UART Register Interface provides a robust, high-speed communication channel 
 ## 3. Protocol Specification
 
 ### 3.1 Command Packet Format
-All commands follow an 11-byte packet structure:
+All commands use 12 bytes. This replaces the previous unaddressed format;
+old hosts must be updated together with the FPGA image.
 
 | Byte | Field | Description |
 |------|-------|-------------|
-| 0 | CMD | Command type (0x01=Write, 0x02=Read) |
-| 1 | ADDR | Register address |
-| 2-9 | DATA | 64-bit data (big-endian) |
-| 10 | CRC | CRC-8 checksum of bytes 0-9 |
+| 0 | DEVICE | Destination device address (default 0x16) |
+| 1 | CMD | Command type (0x01=Write, 0x02=Read) |
+| 2 | ADDR | Register address |
+| 3-10 | DATA | 64-bit data (big-endian) |
+| 11 | CRC | CRC-8 checksum of bytes 0-10, including DEVICE |
+
+The `DEVICE_ADDRESS` generic on `uart_max10_top` is passed to the register
+interface. It is an 8-bit compile-time constant, default `x"16"`, implemented
+in logic. No runtime configuration-flash or UFM writes are performed. Changing
+the generic requires recompiling/programming the FPGA image. FIFO M9Ks remain
+volatile data buffers, separate from configuration storage.
+
+All 256 addresses are ordinary device addresses; there is no broadcast address.
+A complete foreign packet is consumed without register/peripheral side effects,
+command-valid pulses, replies, or opcode/register/CRC errors. A partial foreign
+packet expires silently after the inter-byte timeout. UART framing and FIFO
+overflow errors still describe the local receiver, regardless of destination.
+Embedded address bytes in a foreign payload never start a new packet.
+
+The address is routing information, not an authentication mechanism. This change
+does not add an RS-485 transceiver enable or make UART TX pins shareable. The
+transport remains separate RX/TX lines. Fixed-length framing still requires
+correct packet boundaries; after lost bytes follow the overflow/idle recovery
+procedure rather than treating the device address as a start delimiter.
 
 ### 3.2 Response Packet Format
-Read responses follow a 10-byte structure:
+Read responses use 11 bytes:
 
 | Byte | Field | Description |
 |------|-------|-------------|
-| 0 | HDR | Response header (0x02) |
-| 1-8 | DATA | 64-bit data (big-endian) |
-| 9 | CRC | CRC-8 checksum of bytes 0-8 |
+| 0 | DEVICE | Responding device address |
+| 1 | HDR | Response header (0x02) |
+| 2-9 | DATA | 64-bit data (big-endian) |
+| 10 | CRC | CRC-8 checksum of bytes 0-9, including DEVICE |
+
+Python selects the address with
+`UARTRegisterInterface(port="COM3", device_address=0x16)`. It checks reply
+address, header, length and CRC before returning data. Writes remain unacknowledged.
 
 ### 3.3 CRC-8 Calculation
 **Polynomial:** 0x07 (x^8 + x^2 + x + 1)  
@@ -286,7 +312,7 @@ accept 1..65535 at elaboration, subject to available device resources.
 
 #### Queue behavior and overflow recovery
 
-RX and TX operate concurrently with unchanged command/response formats.
+RX and TX operate concurrently using the addressed command/response formats.
 A full TX queue pauses response construction; commands wait in RX order.
 These are UART byte queues. Hosts must still check SPI/I2C busy/completion
 status before starting another peripheral transaction.
@@ -429,18 +455,16 @@ RegisterInterface.lvlib
 ### Appendix A: Command Examples
 
 #### Write Control Register 0
-```
-Command: 0x01 0x00 0x12 0x34 0x56 0x78 0x9A 0xBC 0xDE 0xF0 0x47
-Description: Write 0x123456789ABCDEF0 to control register 0
-CRC: 0x47
+```text
+Command: 0x16 0x01 0x00 0x12 0x34 0x56 0x78 0x9A 0xBC 0xDE 0xF0 0x3A
+Description: Device 0x16, write 0x123456789ABCDEF0 to register 0
 ```
 
 #### Read Status Register 0
-```
-Command: 0x02 0x10 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x8E
-Response: 0x02 0x01 0x23 0x45 0x67 0x89 0xAB 0xCD 0xEF 0x??
-Description: Read status register 0 (0x10)
-Response breakdown: HDR=0x02, DATA=0x0123456789ABCDEF (64-bit), CRC=calculated
+```text
+Command: 0x16 0x02 0x10 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0xE0
+Response: 0x16 0x02 0x01 0x23 0x45 0x67 0x89 0xAB 0xCD 0xEF 0x09
+Description: Device 0x16, register 0x10, example result 0x0123456789ABCDEF
 ```
 
 ### Appendix B: SPI Configuration Examples
