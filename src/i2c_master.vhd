@@ -67,6 +67,15 @@ architecture behavioral of i2c_master is
     -- Synchronize and normalize open-drain bus inputs (including weak pull-ups).
     signal scl_sync : std_logic_vector(1 downto 0) := (others => '1');
     signal sda_sync : std_logic_vector(1 downto 0) := (others => '1');
+    attribute preserve : boolean;
+    attribute altera_attribute : string;
+    attribute preserve of scl_sync : signal is true;
+    attribute altera_attribute of scl_sync : signal is
+        "-name SYNCHRONIZER_IDENTIFICATION ""FORCED IF ASYNCHRONOUS""";
+    attribute preserve of sda_sync : signal is true;
+    attribute altera_attribute of sda_sync : signal is
+        "-name SYNCHRONIZER_IDENTIFICATION ""FORCED IF ASYNCHRONOUS""";
+
 
     -- Timing control
     signal quarter_tick  : std_logic := '0';  -- I2C clock quarter period tick
@@ -91,13 +100,9 @@ begin
     process(clk)
     begin
         if rising_edge(clk) then
-            if rst = '1' then
-                scl_sync <= (others => '1');
-                sda_sync <= (others => '1');
-            else
-                scl_sync <= scl_sync(0) & to_x01(scl);
-                sda_sync <= sda_sync(0) & to_x01(sda);
-            end if;
+            -- Free-running two-FF chains; normalize weak external pull-ups.
+            scl_sync <= scl_sync(0) & to_x01(scl);
+            sda_sync <= sda_sync(0) & to_x01(sda);
         end if;
     end process;
 

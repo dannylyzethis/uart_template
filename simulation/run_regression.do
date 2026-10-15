@@ -4,7 +4,7 @@ onbreak {quit -force -code 1}
 set BreakOnAssertion 2
 # Run with simulation/ as the working directory.
 do compile_all.do
-foreach {tb duration} {uart_register_tb {45 ms} uart_system_tb {40 ms} spi_master_tb {3 us} uart_max10_tb {25 ms}} {
+foreach {tb duration} {reset_synchronizer_tb {3 us} uart_register_tb {45 ms} uart_system_tb {40 ms} spi_master_tb {3 us} uart_max10_tb {25 ms}} {
     vsim work.$tb
     set BreakOnAssertion 2
     onbreak {quit -force -code 1}

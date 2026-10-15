@@ -169,6 +169,12 @@ architecture behavioral of uart_register_interface is
 
     -- UART RX synchronizer chain (critical for clock domain crossing)
     signal uart_rx_sync : std_logic_vector(2 downto 0) := "111";
+    attribute preserve : boolean;
+    attribute altera_attribute : string;
+    attribute preserve of uart_rx_sync : signal is true;
+    attribute altera_attribute of uart_rx_sync : signal is
+        "-name SYNCHRONIZER_IDENTIFICATION ""FORCED IF ASYNCHRONOUS""";
+
     
     -- Command packet registers
     signal cmd_byte   : std_logic_vector(7 downto 0);
@@ -229,12 +235,8 @@ begin
     process(clk)
     begin
         if rising_edge(clk) then
-            if rst = '1' then
-                uart_rx_sync <= "111";  -- Initialize to idle state
-            else
-                -- Two FF synchronizer chain
-                uart_rx_sync <= uart_rx_sync(1 downto 0) & uart_rx;
-            end if;
+            -- Three FFs; only the final stage feeds functional logic.
+            uart_rx_sync <= uart_rx_sync(1 downto 0) & uart_rx;
         end if;
     end process;
     

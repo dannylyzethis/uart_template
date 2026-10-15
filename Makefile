@@ -1,7 +1,7 @@
 # Makefile for UART Register Interface Project
 # Provides convenient commands for simulation and testing
 
-.PHONY: help compile sim-basic sim-system sim-regression synth test-host clean test-python install-python
+.PHONY: help compile sim-basic sim-system sim-regression synth check-cdc test-host clean test-python install-python
 
 # Default target
 help:
@@ -87,5 +87,9 @@ test-host:
 # Provisional MAX 10 fit; board pins/timing must be confirmed before programming.
 synth:
 	cd quartus && quartus_sh --flow compile uart_max10_top
+
+# Run after fitting; checks endpoint names and timed synchronizer stages.
+check-cdc:
+	cd quartus && quartus_sta -t check_cdc.tcl
 
 .DEFAULT_GOAL := help

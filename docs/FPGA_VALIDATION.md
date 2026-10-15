@@ -12,22 +12,59 @@ MAX 10 target. Physical board validation is still pending.
 | --- | --- |
 | Part | 10M08SAE144C8G |
 | Top / clock | uart_max10_top / 50 MHz |
-| Logic elements | 1,808 / 8,064 (22%) |
-| Registers | 1,158 |
+| Logic elements | 1,785 / 8,064 (22%) |
+| Registers | 1,160 |
 | Pins | 26 / 101 |
 | RAM / multipliers / PLL | 1,024 data bits in 2 M9Ks / 0 / 0 |
-| Worst internal setup / hold slack | +10.432 ns / +0.101 ns |
-| Slow 85 C reported Fmax | 104.52 MHz |
+| Worst internal setup / hold slack | +10.038 ns / +0.095 ns |
+| Slow 85 C reported Fmax | 100.38 MHz |
 
 These timing numbers cover constrained internal paths. TimeQuest still reports
-seven unconstrained input ports and 21 unconstrained output ports. All 26 used
+two unconstrained input ports (SPI MISO) and 21 unconstrained output ports. All 26 used
 pins lack exact location assignments. The fitter also raises a single-supply
 power review critical warning and a 3.3-V interface warning. Power is estimated
-at 194.65 mW with low confidence (insufficient toggle data). Do not program the
+at 193.92 mW with low confidence (insufficient toggle data). Do not program the
 SOF/POF until the board pin map, bank voltages and external timing are validated.
 Read stage reports even when the shell's final summary says zero warnings.
 Reports and generated images are in `quartus/output_files/` (ignored by Git).
 QPF/QSF inputs were already tracked; ignore exceptions make that intent clear.
+
+## Reset and clock-domain crossings
+
+The top-level active-low `reset_n` now feeds a preserved two-register reset
+conditioner. It asserts internal reset asynchronously and releases after two
+rising `clk_50` edges. Downstream controllers still use synchronous reset:
+their outputs reset on a clock edge, and they resume on the edge after reset
+release. A stopped clock therefore holds the internal reset request but does
+not immediately reset every controller output. LED0 now indicates conditioned
+reset release. Power-up initialization holds reset through the first two edges.
+
+UART RX uses three free-running flip-flops; each I2C SDA/SCL input uses two.
+Only final stages feed functional logic. Preserve and scoped Quartus
+`SYNCHRONIZER_IDENTIFICATION` attributes keep these chains identifiable without
+adding reset muxes to the data stages. TimeQuest now recognizes six chains:
+reset, UART RX, and four I2C inputs. SPI MISO remains a board-timed input;
+its sampling must be constrained against the actual slave/board delays.
+
+The SDC exempts pad arrivals only at data-chain first stages and external reset
+assertion pins. It does not cut synchronizer-to-synchronizer paths or the
+conditioned reset distribution. After fitting, run:
+
+```text
+cd quartus
+quartus_sta -t check_cdc.tcl
+```
+
+Or `make check-cdc`. The check verifies expected endpoint counts and all seven
+inter-stage setup paths remain timed. Detailed metastability and exception
+reports are generated under `quartus/output_files/cdc_*.rpt`. The reported
+worst settling time is 33.388 ns. MTBF is an estimate using tool-default toggle
+rates, not measured hardware reliability. Simulation verifies digital reset
+behavior; it cannot reproduce analog metastability or guarantee capture of
+arbitrarily narrow electrical reset pulses.
+
+The identification approach follows the Intel
+[Standard Edition design recommendations](https://www.intel.com/programmable/technical-pdfs/683323.pdf).
 
 ## Device addressing
 
@@ -98,6 +135,7 @@ exercise error detection and are not assertion failures.
 
 | Test | Coverage |
 | --- | --- |
+| reset_synchronizer_tb | Startup without external reset, 20 release phases, between-edge short pulse, assertion/release while clock stopped |
 | uart_register_tb | 15 protocol scenarios, response bytes/CRC, framing, timeout, sticky errors/clear |
 | uart_system_tb | Integrated UART/peripherals, pulled-up no-slave I2C NACK, SPI completion, protocol errors |
 | spi_master_tb | Existing mode-1/8-bit MOSI and constant MISO test |
@@ -106,9 +144,9 @@ exercise error detection and are not assertion failures.
 | sync_byte_fifo_tb | Depths 1/3/16/64: empty/full, simultaneous push/pop, wrap, rejected operations, reset, and 2,000 pseudorandom cycles per depth |
 | uart_fifo_tb | Serial packets with ordered bursts, 12 ms TX backpressure, queued writes, capacities/levels, RX overflow, idle recovery and W1C |
 | uart_address_tb | Addresses 0x16/0xA5/0x00/0xFF; foreign packet filtering including embedded local address bytes, invalid foreign packets, local CRC errors, address CRC coverage, exact command/write strobes, foreign timeout recovery |
-| uart_max10_tb | Actual 50 MHz top with DEVICE_ADDRESS=0xA5: both I2C channels read/write with stretching, SPI0 mode-0/8-bit and SPI1 mode-1/32-bit loopback readback, UART response CRC and clean error status |
+| uart_max10_tb | Actual 50 MHz top with DEVICE_ADDRESS=0xA5: both I2C channels read/write with stretching, SPI0 mode-0/8-bit and SPI1 mode-1/32-bit loopback readback, UART response CRC and clean error status; short reset pulse aborts partial command and subsequent addressed read succeeds |
 
-Focused runners: `run_address_test.do`, `run_fifo_test.do`, `run_spi_matrix.do`, `run_i2c_test.do`, `run_max10_test.do`.
+Focused runners: `run_reset_test.do`, `run_address_test.do`, `run_fifo_test.do`, `run_spi_matrix.do`, `run_i2c_test.do`, `run_max10_test.do`.
 The retained `run_spi_diagnostic.do` and `run_spi_32bit_diagnostic.do` reproduce
 the formerly failing cases and now must pass. Run the main compile first when
 using these two focused diagnostics.
@@ -156,13 +194,14 @@ Or use `make synth`. Quartus MCP `quartus_compile` arguments:
 }
 ```
 
-The QSF lists the six synthesis units and the SDC. The SDC defines a 20 ns
-clock and UART input exception but no external I/O delays. The Xilinx XDC is
+The QSF lists the seven synthesis units and the SDC. The SDC defines a 20 ns
+clock and scoped UART/I2C/reset input exceptions but no external I/O delays. The Xilinx XDC is
 not used in this flow. The part and 3.3-V LVTTL standard need confirmation
 against the actual board.
 
 ## Beads and remaining board work
 
+- `uart_template-wg4`: reset conditioning, synchronizer recognition and timed-path checks.
 - `uart_template-fek`: addressed UART format, configurable top-level constant and host/RTL regression.
 - `uart_template-8g9`: UART FIFOs, host status helpers, overflow recovery and validation.
 - `uart_template-drf`: SPI fixes and regression matrix.
@@ -171,7 +210,7 @@ against the actual board.
 - `uart_template-d2q`: external timing still needs justified constraints.
 - `uart_template-9r8`: board/part, pin assignments, bank voltages, power and I/O
   requirements remain open. The 50 MHz top-level test is now implemented.
-  Reset/CDC hardware review remains: external reset currently drives synchronous
-  resets directly; TimeQuest does not recognize the RTL synchronizer chains.
+  Reset conditioning and synchronizer recognition are now implemented and checked;
+  physical reset pulse requirements and board-level signal integrity remain to verify.
 
 No hardware programming, Git commit, push or Dolt remote sync was performed.

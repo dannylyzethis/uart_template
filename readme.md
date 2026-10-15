@@ -20,6 +20,7 @@ A robust UART-based register interface for FPGA control in RF test equipment.
 
 ## Files
 - `src/uart_register_interface.vhd` - Main design
+- `src/reset_synchronizer.vhd` - External reset capture and synchronized release
 - `src/uart_core.vhd` - UART controller
 - `src/sync_byte_fifo.vhd` - Configurable synchronous byte FIFO (M9K storage)
 - `testbench/uart_register_tb.vhd` - Testbench
@@ -56,3 +57,12 @@ constant, with no runtime flash writes. Other device addresses are ignored
 while preserving packet boundaries. Python uses
 `UARTRegisterInterface(port="COM3", device_address=0x16)`.
 This wire-format change requires updating legacy hosts with the FPGA image.
+
+### Reset and CDC checks
+
+The top level captures active-low reset and releases internal reset after two
+50 MHz clock edges. UART RX and I2C inputs have preserved synchronizer chains;
+Quartus recognizes all six chains including reset. After fitting, run
+`make check-cdc` to verify exception endpoints and timed inter-stage paths.
+Controller resets remain synchronous; board pins and SPI external timing still
+need board-specific validation before programming.

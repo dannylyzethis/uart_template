@@ -81,7 +81,8 @@ architecture rtl of uart_max10_top is
     signal seconds_count : unsigned(31 downto 0) := (others => '0');
     signal second_divider: integer range 0 to CLK_FREQ - 1 := 0;
 begin
-    rst <= not reset_n;
+    reset_conditioner: entity work.reset_synchronizer
+        port map (clk => clk_50, reset_n => reset_n, rst => rst);
 
     register_interface: entity work.uart_register_interface
         generic map (
@@ -204,7 +205,7 @@ begin
     status_reg5 <= (others => '0');
 
     -- The evaluation-kit LEDs are active-low.
-    led(0) <= reset_n;
+    led(0) <= not rst;
     led(1) <= not (spi0_busy or spi1_busy);
     led(2) <= not (i2c0_busy or i2c1_busy);
     led(3) <= not (cmd_error or crc_error or timeout_error);

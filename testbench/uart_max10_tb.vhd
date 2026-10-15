@@ -124,6 +124,13 @@ begin
         wait for 100 us;
         read_status(x"13", x"0000004B2C5A69B4");
         read_status(x"16", x"0000000000000000");
+        -- Interrupt a partial command with a pulse shorter than a clock period.
+        send_byte(x"A5"); send_byte(x"01"); send_byte(x"00");
+        wait until falling_edge(clk); wait for 2 ns;
+        reset_n <= '0'; wait for 2 ns; reset_n <= '1'; wait for 200 ns;
+        assert uart_tx = '1' and cs0 = "1111" and cs1 = "1111" and led(0) = '1'
+            report "Top did not return to idle after short reset pulse" severity error;
+        read_status(x"16", x"0000000000000000");
         test_completed <= true;
         report "PASS: MAX 10 50 MHz UART/I2C reads+writes/SPI readback/CRC";
         wait;

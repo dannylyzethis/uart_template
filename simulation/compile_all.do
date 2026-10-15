@@ -11,6 +11,7 @@ vmap work work
 # Compile source files in dependency order
 echo "Compiling VHDL source files..."
 
+vcom -2002 -work work ../src/reset_synchronizer.vhd
 vcom -2002 -work work ../src/sync_byte_fifo.vhd
 
 # 1. Basic UART core
@@ -45,3 +46,5 @@ echo "To run basic testbench:       do run_basic_test.do"
 echo "To run comprehensive test:    do run_system_test.do"
 
 vcom -2002 -work work ../testbench/uart_address_tb.vhd
+
+vcom -2002 -work work ../testbench/reset_synchronizer_tb.vhd
