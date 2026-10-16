@@ -75,7 +75,7 @@ clean:
 doc:
 	@echo "Documentation is available in:"
 	@echo "  docs/UART_Register_Interface_Specification.md"
-	@echo "  readme.md"
+	@echo "  README.md"
 
 # Run protocol, peripheral and MAX 10 integration simulations with assertion/completion checks
 sim-regression:

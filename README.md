@@ -31,9 +31,6 @@ A robust UART-based register interface for FPGA control in RF test equipment.
 2. From `simulation/`, run `vsim -c -do "do run_regression.do"`
 3. Integrate with your RF test system
 
-## Author
-RF Test Automation Beast 🚀
-
 ## MAX 10 validation
 
 See [FPGA validation](docs/FPGA_VALIDATION.md) for ModelSim MCP and Quartus MCP commands, measured fit/timing results, and verified SPI/I2C fixes. The current Quartus target is 10M08SAE144C8G at 50 MHz; board pin assignments and external timing are still required before programming.
