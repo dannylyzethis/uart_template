@@ -214,10 +214,6 @@ architecture behavioral of uart_register_interface is
     signal spi0_start_int : std_logic := '0';
     signal spi1_start_int : std_logic := '0';
     
-    -- SPI configuration registers (extracted from control registers)
-    signal spi0_config    : std_logic_vector(63 downto 0);
-    signal spi1_config    : std_logic_vector(63 downto 0);
-    
     -- Internal strobe signals for reading outputs
     signal ctrl_write_strobe_int : std_logic_vector(5 downto 0);
     signal status_read_strobe_int : std_logic_vector(5 downto 0);
@@ -610,10 +606,6 @@ begin
     ctrl_write_strobe <= ctrl_write_strobe_int;
     status_read_strobe <= status_read_strobe_int;
     
-    -- Extract SPI configuration
-    spi0_config <= ctrl_registers(4);  -- Control register 4 for SPI0 config
-    spi1_config <= ctrl_registers(5);  -- Control register 5 for SPI1 config
-    
     -- I2C control outputs
     -- These bus ports are passive in the register-interface block. The actual
     -- I2C masters own the open-drain drivers at the system integration level.
@@ -677,10 +669,10 @@ begin
                 -- shared data register launches each enabled SPI channel, so
                 -- the newly written transmit word is already available.
                 if ctrl_write_strobe_int(3) = '1' then
-                    if spi0_config(63) = '1' then  -- SPI0 enable bit
+                    if ctrl_registers(4)(63) = '1' then  -- SPI0 enable bit
                         spi0_start_int <= '1';
                     end if;
-                    if spi1_config(63) = '1' then  -- SPI1 enable bit
+                    if ctrl_registers(5)(63) = '1' then  -- SPI1 enable bit
                         spi1_start_int <= '1';
                     end if;
                 end if;
@@ -692,7 +684,6 @@ begin
     cmd_valid <= cmd_valid_int;
     cmd_error <= error_flags_int(ERR_INVALID_OPCODE) or
                  error_flags_int(ERR_INVALID_ADDRESS) or
-                 error_flags_int(ERR_UNEXPECTED_RX) or
                  error_flags_int(ERR_RX_OVERFLOW) or error_flags_int(ERR_TX_OVERFLOW);
     crc_error <= error_flags_int(ERR_CRC);
     timeout_error <= error_flags_int(ERR_TIMEOUT);
@@ -760,14 +751,14 @@ end behavioral;
 --   [63:32] Timestamp (seconds since reset)
 --   [31:24] I2C/SPI busy flags: [7:6]=SPI1/0 busy, [5:4]=I2C1/0 busy
 --   [23:16] I2C/SPI error flags: [7:6]=SPI1/0 errors, [5:4]=I2C1/0 ACK errors
---   [15:8]  Temperature (�C)
+--   [15:8]  Temperature (degC)
 --   [7:0]   System status bits
 --
 -- Address 0x11: Status Register 1 - Current Measurements
---   [63:48] Current monitor 3 (�A)
---   [47:32] Current monitor 2 (�A)
---   [31:16] Current monitor 1 (�A)
---   [15:0]  Current monitor 0 (�A)
+--   [63:48] Current monitor 3 (uA)
+--   [47:32] Current monitor 2 (uA)
+--   [31:16] Current monitor 1 (uA)
+--   [15:0]  Current monitor 0 (uA)
 --
 -- Address 0x12: Status Register 2 - Voltage Measurements & I2C Data  
 --   [63:48] Voltage monitor 1 (mV)
