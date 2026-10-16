@@ -272,7 +272,11 @@ class UARTRegisterInterface:
     # ============ High-Level Control Methods ============
 
     def set_system_control(self, reset: bool = False, enable: bool = True):
-        """Set system control bits"""
+        """Set system control bits.
+
+        Example mapping (bit 0 reset, bit 1 enable). The template leaves
+        register 0x00 unassigned; adapt to your design.
+        """
         value = 0
         if reset:
             value |= 0x01
@@ -411,7 +415,11 @@ class UARTRegisterInterface:
         }
 
     def read_currents(self) -> dict:
-        """Read current measurements"""
+        """Read current measurements.
+
+        Example mapping for status register 0x11. Template slot: the
+        template drives it to zero until a design assigns it.
+        """
         value = self.read_register(RegisterAddress.STATUS_CURRENT)
         if value is None:
             return {}
@@ -424,7 +432,11 @@ class UARTRegisterInterface:
         }
 
     def read_voltages(self) -> dict:
-        """Read voltage measurements"""
+        """Read voltage measurements.
+
+        Example mapping for status register 0x12 (voltage fields are
+        template slots; the I2C receive fields are driven by the top level).
+        """
         value = self.read_register(RegisterAddress.STATUS_VOLTAGE)
         if value is None:
             return {}

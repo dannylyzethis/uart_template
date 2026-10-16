@@ -15,6 +15,8 @@ A robust UART-based register interface for FPGA control in RF test equipment.
 - Consistent addressing scheme
 
 ## Register Map
+This is a template: control registers 0x00-0x05 and status registers 0x10-0x15 are general-purpose slots, assigned per design. Documented field layouts are examples.
+
 - Control: 0x00-0x06 (write operations; 0x06 clears sticky errors)
 - Status: 0x10-0x18 (0x16 sticky errors, 0x17 FIFO status, 0x18 FIFO capacities)
 

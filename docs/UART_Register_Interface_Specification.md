@@ -146,6 +146,15 @@ end function;
 
 ## 4. Register Map
 
+> **Template note:** this repository is a template, not a specific design.
+> Registers 0x00-0x05 and 0x10-0x15 are general-purpose slots. The field
+> layouts below (system control, switches, temperature, current/voltage
+> monitors, counters) are example assignments. Hardware for them (ADCs,
+> monitors, counters) is not part of the template, and unconnected status
+> slots read as zero. Assign meanings per design when you integrate it.
+> The I2C/SPI control bits, `0x06`, `0x16`, `0x17` and `0x18` are fixed
+> template behavior.
+
 ### 4.1 Control Registers (Write Operations)
 
 #### Register 0x00: System Control
@@ -368,7 +377,11 @@ it does not pipeline requests.
 
 ### 6.3 Communication Timeouts
 - **UART:** Incomplete commands time out after 10 ms waiting for the next byte; TX backpressure does not trigger the packet watchdog
-- **Framing:** Bytes with an invalid stop bit are discarded and set `UART_FRAMING`
+- **Framing:** Bytes with an invalid stop bit are discarded and set `UART_FRAMING`.
+  The missing byte leaves the packet short, so the receiver resynchronizes through the
+  10 ms packet timeout or a CRC failure on the shifted bytes.
+- **Foreign packets:** a packet addressed to another device is consumed with no side
+  effects, and an incomplete one expires silently without setting `PACKET_TIMEOUT`
 - **I2C:** ACK error detection and reporting
 - **SPI:** Transaction completion monitoring
 
